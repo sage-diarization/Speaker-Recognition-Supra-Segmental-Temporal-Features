@@ -38,6 +38,27 @@ pip install -r requirements.txt
 python -m src.experiment --config configs/cnn_timit.yaml
 ```
 
+`device: "auto"` (the default, see `configs/cnn_timit.yaml`) picks the best
+available accelerator at startup — cuda, then mps, then cpu — so the same
+config runs unchanged on a SLURM GPU node, an Apple Silicon laptop, or a
+CPU-only machine. Set it explicitly (e.g. `device: "cpu"`) to override.
+
+## Tracking progress with wandb
+
+Set `wandb.enabled: true` in the config to track runs (see
+`configs/cnn_timit.yaml`). One wandb run is started per training-strategy
+(OS/SS/SU), each with a live per-epoch `train/loss` curve and, once training
+finishes, the resulting SV/EER and SC/MR numbers against all three test
+strategies logged to that run's summary — this mirrors
+`context/src/train.py`'s per-run `wandb.init` + `EvalCallback` logging,
+minus the Keras-specific weight-histogram logging.
+
+On a SLURM cluster whose compute nodes have no internet access, set
+`wandb.mode: "offline"` — logs are written locally and synced later with
+`wandb sync <run-dir>` from a login node. `wandb.mode: "disabled"` fully
+no-ops (useful for local smoke runs). When `wandb.enabled: false` (the
+default), nothing wandb-related is imported or called at all.
+
 ## Adding a new model backend (e.g. Conformer)
 
 Register a `build_<name>(config) -> nn.Module` in `src/models/registry.py`'s

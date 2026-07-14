@@ -1,8 +1,10 @@
 import argparse
 
+from . import tracking
 from .config import ExperimentConfig
 from .data.dataset import SegmentDataset, featurize_waveform
 from .data.timit import TimitCorpus
+from .device import resolve_device
 from .evaluation.clustering import best_misclassification_rate
 from .evaluation.verification import equal_error_rate
 from .models.losses import build_loss
@@ -38,6 +40,9 @@ def select_clustering_subset(utterances, num_speakers, utterances_per_speaker):
 
 
 def run_experiment(config, corpus=None):
+    config.device = resolve_device(config.device)
+    print(f"==> Using device: {config.device}")
+
     corpus = corpus or TimitCorpus(config.data)
     transformation = config.transformation
     segment_length = config.data.segment_length(transformation)
@@ -51,17 +56,36 @@ def run_experiment(config, corpus=None):
 
     results = {"SV": {}, "SC": {}}
     for train_strategy in STRATEGIES:
+        run = tracking.start_run(
+            config.wandb,
+            name=f"{config.model.type}-{train_strategy}",
+            tags=[config.model.type, train_strategy],
+            run_config=config.to_dict(),
+        )
+
         dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
         model = build_model(config)
         loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
-        train(model, loss_module, dataset, config)
+        train(model, loss_module, dataset, config, run=run, device=config.device)
 
+        summary = {}
         for test_strategy in STRATEGIES:
-            sv_embeddings, sv_labels = extract_embeddings(model, test_utterances, segment_length, test_strategy)
-            results["SV"][(train_strategy, test_strategy)] = equal_error_rate(sv_embeddings, sv_labels)
+            sv_embeddings, sv_labels = extract_embeddings(
+                model, test_utterances, segment_length, test_strategy, device=config.device
+            )
+            eer = equal_error_rate(sv_embeddings, sv_labels)
+            results["SV"][(train_strategy, test_strategy)] = eer
+            summary[f"final/SV_EER_test-{test_strategy}"] = eer
 
-            sc_embeddings, sc_labels = extract_embeddings(model, sc_utterances, segment_length, test_strategy)
-            results["SC"][(train_strategy, test_strategy)] = best_misclassification_rate(sc_embeddings, sc_labels)
+            sc_embeddings, sc_labels = extract_embeddings(
+                model, sc_utterances, segment_length, test_strategy, device=config.device
+            )
+            mr = best_misclassification_rate(sc_embeddings, sc_labels)
+            results["SC"][(train_strategy, test_strategy)] = mr
+            summary[f"final/SC_MR_test-{test_strategy}"] = mr
+
+        tracking.log_summary(run, summary)
+        tracking.finish(run)
 
     return results
 

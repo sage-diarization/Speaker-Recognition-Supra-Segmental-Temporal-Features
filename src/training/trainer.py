@@ -2,10 +2,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from .. import tracking
 from ..data.segments import DRAW_STRATEGIES
 
 
-def train(model, loss_module, dataset, config, device="cpu"):
+def train(model, loss_module, dataset, config, run=None, device="cpu"):
     model.to(device)
     loss_module.to(device)
     loader = DataLoader(dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True)
@@ -17,7 +18,7 @@ def train(model, loss_module, dataset, config, device="cpu"):
     model.train()
     loss_module.train()
     history = []
-    for _ in range(config.training.num_epochs):
+    for epoch in range(config.training.num_epochs):
         epoch_loss, n_batches = 0.0, 0
         for x, labels in loader:
             x, labels = x.to(device), labels.to(device)
@@ -28,7 +29,9 @@ def train(model, loss_module, dataset, config, device="cpu"):
             optimizer.step()
             epoch_loss += loss.item()
             n_batches += 1
-        history.append(epoch_loss / max(n_batches, 1))
+        mean_loss = epoch_loss / max(n_batches, 1)
+        history.append(mean_loss)
+        tracking.log(run, {"train/loss": mean_loss}, step=epoch)
     return history
 
 

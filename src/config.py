@@ -75,6 +75,17 @@ class EvaluationConfig:
 
 
 @dataclass
+class WandbConfig:
+    enabled: bool = False
+    project: str = "speaker-verification"
+    entity: str = ""
+    # "online" needs network+login; "offline" writes locally for a later `wandb sync`
+    # (useful on SLURM compute nodes without internet); "disabled" is a full no-op.
+    mode: str = "online"
+    tags: list = field(default_factory=list)
+
+
+@dataclass
 class ExperimentConfig:
     transformation: TransformationConfig = field(default_factory=TransformationConfig)
     data: DataConfig = field(default_factory=DataConfig)
@@ -83,6 +94,10 @@ class ExperimentConfig:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)
+    # "auto" picks cuda > mps > cpu at runtime (see src/device.py); set explicitly
+    # (e.g. "cpu") to override autodetection.
+    device: str = "auto"
 
     @classmethod
     def from_yaml(cls, path):
@@ -101,8 +116,10 @@ class ExperimentConfig:
             ("optimizer", OptimizerConfig),
             ("training", TrainingConfig),
             ("evaluation", EvaluationConfig),
+            ("wandb", WandbConfig),
         ):
             kwargs[section_name] = section_cls(**raw.get(section_name, {}))
+        kwargs["device"] = raw.get("device", "auto")
         return cls(**kwargs)
 
     def to_dict(self):

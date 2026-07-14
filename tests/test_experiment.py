@@ -68,3 +68,50 @@ def test_run_experiment_end_to_end_on_synthetic_corpus():
     report = format_results(results)
     assert "SV (EER)" in report
     assert "SC (MR)" in report
+
+
+def _tiny_stub_corpus():
+    waveforms = {"TRAIN": {}, "TEST": {}}
+    seed = 0
+    for split in waveforms:
+        for speaker in range(2):
+            speaker_id = f"SPK{speaker}"
+            waveforms[split][speaker_id] = [
+                make_synthetic_waveform(200 + 150 * speaker, 2.0, 16000, seed=seed)
+                for seed in range(seed, seed + 3)
+            ]
+            seed += 3
+    return _StubCorpus(waveforms)
+
+
+def test_run_experiment_resolves_auto_device_onto_the_config(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.sc_utterances_per_speaker = 1
+    assert config.device == "auto"
+
+    run_experiment(config, corpus=_tiny_stub_corpus())
+
+    assert config.device == "cpu"
+
+
+def test_run_experiment_honors_an_explicit_device_override():
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.sc_utterances_per_speaker = 1
+    config.device = "cpu"
+
+    run_experiment(config, corpus=_tiny_stub_corpus())
+
+    assert config.device == "cpu"

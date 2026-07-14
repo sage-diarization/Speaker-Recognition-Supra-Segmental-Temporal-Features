@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# wandb local run logs (online/offline mode)
+wandb/
+
 # C extensions
 *.so
 

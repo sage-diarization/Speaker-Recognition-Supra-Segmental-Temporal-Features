@@ -1,3 +1,5 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+
 data:
   timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree
   archive_path: ""        # or a local .zip of your own licensed TIMIT copy
@@ -18,3 +20,10 @@ training:
 evaluation:
   sc_num_speakers: 40
   sc_utterances_per_speaker: 2
+
+wandb:
+  enabled: false          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: ""              # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []
