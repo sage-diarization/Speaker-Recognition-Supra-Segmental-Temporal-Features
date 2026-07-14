@@ -133,3 +133,7 @@ dmypy.json
 jupyter/
 
 .idea
+
+# HPC
+logs/
+*.submit
