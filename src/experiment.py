@@ -68,6 +68,9 @@ def run_experiment(config, corpus=None):
         loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
         train(model, loss_module, dataset, config, run=run, device=config.device)
 
+        # results keeps the raw [0, 1] fractions returned by the metric functions
+        # (matching context/src); summary reports them as percentages, matching
+        # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
         summary = {}
         for test_strategy in STRATEGIES:
             sv_embeddings, sv_labels = extract_embeddings(
@@ -75,14 +78,14 @@ def run_experiment(config, corpus=None):
             )
             eer = equal_error_rate(sv_embeddings, sv_labels)
             results["SV"][(train_strategy, test_strategy)] = eer
-            summary[f"final/SV_EER_test-{test_strategy}"] = eer
+            summary[f"final/SV_EER_test-{test_strategy}"] = eer * 100
 
             sc_embeddings, sc_labels = extract_embeddings(
                 model, sc_utterances, segment_length, test_strategy, device=config.device
             )
             mr = best_misclassification_rate(sc_embeddings, sc_labels)
             results["SC"][(train_strategy, test_strategy)] = mr
-            summary[f"final/SC_MR_test-{test_strategy}"] = mr
+            summary[f"final/SC_MR_test-{test_strategy}"] = mr * 100
 
         tracking.log_summary(run, summary)
         tracking.finish(run)
@@ -91,12 +94,14 @@ def run_experiment(config, corpus=None):
 
 
 def format_results(results):
+    """Reports EER/MR as percentages (0-100), matching Tables 1/2 in
+    Neururer et al. 2024; `results` itself stores raw [0, 1] fractions."""
     lines = []
     for task in ("SV", "SC"):
-        lines.append(f"{task} ({'EER' if task == 'SV' else 'MR'}):")
+        lines.append(f"{task} ({'EER' if task == 'SV' else 'MR'}) [%]:")
         lines.append("train\\test  " + "  ".join(f"{s:>8}" for s in STRATEGIES))
         for train_strategy in STRATEGIES:
-            row = [f"{results[task][(train_strategy, s)]:8.4f}" for s in STRATEGIES]
+            row = [f"{results[task][(train_strategy, s)] * 100:8.2f}" for s in STRATEGIES]
             lines.append(f"{train_strategy:<11} " + "  ".join(row))
         lines.append("")
     return "\n".join(lines)

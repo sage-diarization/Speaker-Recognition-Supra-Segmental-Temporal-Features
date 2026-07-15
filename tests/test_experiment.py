@@ -1,5 +1,8 @@
+import pytest
+
+from src import experiment as experiment_module
 from src.config import ExperimentConfig
-from src.experiment import format_results, run_experiment, select_clustering_subset
+from src.experiment import STRATEGIES, format_results, run_experiment, select_clustering_subset
 from tests.conftest import make_synthetic_waveform
 
 
@@ -70,6 +73,24 @@ def test_run_experiment_end_to_end_on_synthetic_corpus():
     assert "SC (MR)" in report
 
 
+def test_format_results_reports_percentages_matching_paper_tables():
+    # Neururer et al. 2024 Tables 1/2 report MR/EER on a 0-100 scale (e.g. MR up to
+    # 37.50, EER up to 23.41), while the metric functions themselves return [0, 1]
+    # fractions. format_results must rescale for the report to be comparable.
+    results = {
+        "SV": {(s1, s2): 0.0638 for s1 in STRATEGIES for s2 in STRATEGIES},
+        "SC": {(s1, s2): 0.375 for s1 in STRATEGIES for s2 in STRATEGIES},
+    }
+
+    report = format_results(results)
+
+    assert "[%]" in report
+    assert "6.38" in report
+    assert "37.50" in report
+    assert "0.0638" not in report
+    assert "0.3750" not in report
+
+
 def _tiny_stub_corpus():
     waveforms = {"TRAIN": {}, "TEST": {}}
     seed = 0
@@ -115,3 +136,30 @@ def test_run_experiment_honors_an_explicit_device_override():
     run_experiment(config, corpus=_tiny_stub_corpus())
 
     assert config.device == "cpu"
+
+
+def test_run_experiment_logs_wandb_summary_on_a_0_100_scale(monkeypatch):
+    # tracking.log_summary receives EER/MR on the same 0-100 scale as
+    # format_results/the paper's tables, even though `results` itself keeps
+    # the raw [0, 1] fractions returned by the metric functions.
+    captured_summaries = []
+    monkeypatch.setattr(
+        experiment_module.tracking, "log_summary", lambda run, metrics: captured_summaries.append(metrics)
+    )
+
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.sc_utterances_per_speaker = 1
+
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+
+    assert len(captured_summaries) == len(STRATEGIES)
+    for summary, train_strategy in zip(captured_summaries, STRATEGIES):
+        for test_strategy in STRATEGIES:
+            eer_fraction = results["SV"][(train_strategy, test_strategy)]
+            mr_fraction = results["SC"][(train_strategy, test_strategy)]
+            assert summary[f"final/SV_EER_test-{test_strategy}"] == pytest.approx(eer_fraction * 100)
+            assert summary[f"final/SC_MR_test-{test_strategy}"] == pytest.approx(mr_fraction * 100)
