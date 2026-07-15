@@ -98,6 +98,9 @@ class ExperimentConfig:
     # "auto" picks cuda > mps > cpu at runtime (see src/device.py); set explicitly
     # (e.g. "cpu") to override autodetection.
     device: str = "auto"
+    # Neururer et al. 2024 (Section 2.3) train/test each strategy 5 times and
+    # report mean and SD of EER/MR over those runs (Tables 1/2).
+    num_runs: int = 5
 
     @classmethod
     def from_yaml(cls, path):
@@ -120,6 +123,7 @@ class ExperimentConfig:
         ):
             kwargs[section_name] = section_cls(**raw.get(section_name, {}))
         kwargs["device"] = raw.get("device", "auto")
+        kwargs["num_runs"] = raw.get("num_runs", 5)
         return cls(**kwargs)
 
     def to_dict(self):

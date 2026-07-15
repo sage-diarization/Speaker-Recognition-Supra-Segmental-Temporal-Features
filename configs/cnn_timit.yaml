@@ -1,4 +1,5 @@
 device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER/MR mean+SD over (Neururer et al. 2024 Section 2.3)
 
 data:
   timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree

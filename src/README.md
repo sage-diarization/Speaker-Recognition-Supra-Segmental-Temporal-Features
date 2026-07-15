@@ -6,12 +6,14 @@ recognition do not learn supra-segmental temporal features"), for a CNN
 backend. See `../context/docs/` for the paper and `../context/src/` for the
 original TensorFlow reference implementation this was ported from.
 
-Trains a CNN speaker embedding model three times (once per training-time
-segment-draw strategy: OS/SS/SU) and evaluates each against all three
-test-time strategies, reporting speaker verification EER and speaker
-clustering MR in a 3x3 grid (reproducing the structure of the paper's
-Tables 1/2, not the exact numbers — the original list-file splits for
-dev/final partitions aren't recoverable from the reference repo).
+Trains a CNN speaker embedding model for each of the three training-time
+segment-draw strategies (OS/SS/SU), repeated `num_runs` times per strategy
+(default 5, see `configs/cnn_timit.yaml`), and evaluates each run against all
+three test-time strategies. Reports speaker verification EER and speaker
+clustering MR as mean/SD over those runs in a 3x3 grid (reproducing the
+structure and mean/SD reporting of the paper's Tables 1/2, not the exact
+numbers — the original list-file splits for dev/final partitions aren't
+recoverable from the reference repo).
 
 - **OS** (Original Segment): a contiguous crop — has both FBA and SST.
 - **SS** (Shuffled within Segment): the OS crop with frame order destroyed.
@@ -47,11 +49,15 @@ CPU-only machine. Set it explicitly (e.g. `device: "cpu"`) to override.
 
 Set `wandb.enabled: true` in the config to track runs (see
 `configs/cnn_timit.yaml`). One wandb run is started per training-strategy
-(OS/SS/SU), each with a live per-epoch `train/loss` curve and, once training
-finishes, the resulting SV/EER and SC/MR numbers against all three test
-strategies logged to that run's summary — this mirrors
-`context/src/train.py`'s per-run `wandb.init` + `EvalCallback` logging,
-minus the Keras-specific weight-histogram logging.
+per repeat (OS/SS/SU x `num_runs`), each with a live per-epoch `train/loss`
+curve and, once training finishes, the resulting SV/EER and SC/MR numbers
+against all three test strategies logged to that run's summary — this
+mirrors `context/src/train.py`'s per-run `wandb.init` + `EvalCallback`
+logging, minus the Keras-specific weight-histogram logging. Once all
+`num_runs` repeats of a training-strategy finish, one further
+`{model}-{strategy}-aggregate` wandb run logs the mean/SD of those repeats
+(`final/..._mean` / `final/..._std`), matching the mean/SD reported in
+Tables 1/2 of Neururer et al. 2024.
 
 On a SLURM cluster whose compute nodes have no internet access, set
 `wandb.mode: "offline"` — logs are written locally and synced later with

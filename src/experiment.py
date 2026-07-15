@@ -1,4 +1,6 @@
 import argparse
+import statistics
+from typing import NamedTuple
 
 from . import tracking
 from .config import ExperimentConfig
@@ -12,6 +14,20 @@ from .models.registry import build_model
 from .training.trainer import extract_embeddings, train
 
 STRATEGIES = ("OS", "SS", "SU")
+
+
+class RunStatistics(NamedTuple):
+    """Mean and (population) SD of a metric, as raw [0, 1] fractions, over
+    config.num_runs independent train/test runs -- matches Neururer et al.
+    2024 Section 2.3: 'For each reported EER/MR, we average over 5 train/test
+    runs and report mean and SD.'"""
+
+    mean: float
+    std: float
+
+
+def _run_statistics(values):
+    return RunStatistics(mean=statistics.fmean(values), std=statistics.pstdev(values))
 
 
 def _featurize_split(corpus, split, transformation):
@@ -56,52 +72,84 @@ def run_experiment(config, corpus=None):
 
     results = {"SV": {}, "SC": {}}
     for train_strategy in STRATEGIES:
-        run = tracking.start_run(
+        # Raw [0, 1] fractions from every one of config.num_runs independent
+        # train/test runs for this strategy, keyed by test_strategy, reduced
+        # to mean/SD below (Neururer et al. 2024 Section 2.3).
+        raw_sv = {test_strategy: [] for test_strategy in STRATEGIES}
+        raw_sc = {test_strategy: [] for test_strategy in STRATEGIES}
+
+        for run_idx in range(config.num_runs):
+            run = tracking.start_run(
+                config.wandb,
+                name=f"{config.model.type}-{train_strategy}-run{run_idx}",
+                tags=[config.model.type, train_strategy],
+                run_config=config.to_dict(),
+            )
+
+            dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
+            model = build_model(config)
+            loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
+            train(model, loss_module, dataset, config, run=run, device=config.device)
+
+            # summary reports this single run's numbers as percentages, matching
+            # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
+            summary = {}
+            for test_strategy in STRATEGIES:
+                sv_embeddings, sv_labels = extract_embeddings(
+                    model, test_utterances, segment_length, test_strategy, device=config.device
+                )
+                eer = equal_error_rate(sv_embeddings, sv_labels)
+                raw_sv[test_strategy].append(eer)
+                summary[f"final/SV_EER_test-{test_strategy}"] = eer * 100
+
+                sc_embeddings, sc_labels = extract_embeddings(
+                    model, sc_utterances, segment_length, test_strategy, device=config.device
+                )
+                mr = best_misclassification_rate(sc_embeddings, sc_labels)
+                raw_sc[test_strategy].append(mr)
+                summary[f"final/SC_MR_test-{test_strategy}"] = mr * 100
+
+            tracking.log_summary(run, summary)
+            tracking.finish(run)
+
+        # Once all of this strategy's runs are done, log the mean/SD over
+        # config.num_runs runs to their own wandb run (Neururer et al. 2024
+        # Section 2.3: "we average over 5 train/test runs and report mean and SD").
+        aggregate_run = tracking.start_run(
             config.wandb,
-            name=f"{config.model.type}-{train_strategy}",
-            tags=[config.model.type, train_strategy],
+            name=f"{config.model.type}-{train_strategy}-aggregate",
+            tags=[config.model.type, train_strategy, "aggregate"],
             run_config=config.to_dict(),
         )
-
-        dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
-        model = build_model(config)
-        loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
-        train(model, loss_module, dataset, config, run=run, device=config.device)
-
-        # results keeps the raw [0, 1] fractions returned by the metric functions
-        # (matching context/src); summary reports them as percentages, matching
-        # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
-        summary = {}
+        aggregate_summary = {}
         for test_strategy in STRATEGIES:
-            sv_embeddings, sv_labels = extract_embeddings(
-                model, test_utterances, segment_length, test_strategy, device=config.device
-            )
-            eer = equal_error_rate(sv_embeddings, sv_labels)
-            results["SV"][(train_strategy, test_strategy)] = eer
-            summary[f"final/SV_EER_test-{test_strategy}"] = eer * 100
-
-            sc_embeddings, sc_labels = extract_embeddings(
-                model, sc_utterances, segment_length, test_strategy, device=config.device
-            )
-            mr = best_misclassification_rate(sc_embeddings, sc_labels)
-            results["SC"][(train_strategy, test_strategy)] = mr
-            summary[f"final/SC_MR_test-{test_strategy}"] = mr * 100
-
-        tracking.log_summary(run, summary)
-        tracking.finish(run)
+            sv_stats = _run_statistics(raw_sv[test_strategy])
+            sc_stats = _run_statistics(raw_sc[test_strategy])
+            results["SV"][(train_strategy, test_strategy)] = sv_stats
+            results["SC"][(train_strategy, test_strategy)] = sc_stats
+            aggregate_summary[f"final/SV_EER_test-{test_strategy}_mean"] = sv_stats.mean * 100
+            aggregate_summary[f"final/SV_EER_test-{test_strategy}_std"] = sv_stats.std * 100
+            aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] = sc_stats.mean * 100
+            aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] = sc_stats.std * 100
+        tracking.log_summary(aggregate_run, aggregate_summary)
+        tracking.finish(aggregate_run)
 
     return results
 
 
 def format_results(results):
-    """Reports EER/MR as percentages (0-100), matching Tables 1/2 in
-    Neururer et al. 2024; `results` itself stores raw [0, 1] fractions."""
+    """Reports EER/MR as `mean% σstd%` (mean and SD over config.num_runs
+    runs, as percentages), matching Tables 1/2 in Neururer et al. 2024;
+    `results` itself stores RunStatistics of raw [0, 1] fractions."""
     lines = []
     for task in ("SV", "SC"):
         lines.append(f"{task} ({'EER' if task == 'SV' else 'MR'}) [%]:")
-        lines.append("train\\test  " + "  ".join(f"{s:>8}" for s in STRATEGIES))
+        lines.append("train\\test  " + "  ".join(f"{s:>14}" for s in STRATEGIES))
         for train_strategy in STRATEGIES:
-            row = [f"{results[task][(train_strategy, s)] * 100:8.2f}" for s in STRATEGIES]
+            row = []
+            for test_strategy in STRATEGIES:
+                stats = results[task][(train_strategy, test_strategy)]
+                row.append(f"{stats.mean * 100:6.2f} σ{stats.std * 100:5.2f}")
             lines.append(f"{train_strategy:<11} " + "  ".join(row))
         lines.append("")
     return "\n".join(lines)
