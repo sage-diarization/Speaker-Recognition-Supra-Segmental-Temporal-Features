@@ -79,6 +79,49 @@ def test_run_experiment_end_to_end_on_synthetic_corpus():
     assert "SC (MR)" in report
 
 
+def test_run_experiment_end_to_end_with_conformer_model():
+    # Same synthetic-corpus pipeline as the CNN test above, but selecting the
+    # Conformer backend via config.model.type -- exercises the model-choice
+    # plumbing (registry lookup, config.conformer hyperparameters) through a
+    # full train/extract/evaluate pass, not just the model's forward pass.
+    config = ExperimentConfig()
+    config.model.type = "Conformer"
+    config.conformer.num_layers = 1
+    config.conformer.encoder_dim = 16
+    config.conformer.num_heads = 2
+    config.conformer.ff_expansion_factor = 2
+    config.conformer.conv_kernel_size = 3
+    config.training.num_epochs = 2
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.sc_utterances_per_speaker = 2
+    config.num_runs = 1
+
+    waveforms = {"TRAIN": {}, "TEST": {}}
+    seed = 0
+    for split in waveforms:
+        for speaker in range(3):
+            speaker_id = f"SPK{speaker}"
+            waveforms[split][speaker_id] = [
+                make_synthetic_waveform(200 + 150 * speaker, 2.0, 16000, seed=seed)
+                for seed in range(seed, seed + 4)
+            ]
+            seed += 4
+
+    corpus = _StubCorpus(waveforms)
+    results = run_experiment(config, corpus=corpus)
+
+    assert set(results.keys()) == {"SV", "SC"}
+    for task in ("SV", "SC"):
+        for train_strategy in ("OS", "SS", "SU"):
+            for test_strategy in ("OS", "SS", "SU"):
+                stats = results[task][(train_strategy, test_strategy)]
+                assert isinstance(stats, RunStatistics)
+                assert 0.0 <= stats.mean <= 1.0
+                assert stats.std >= 0.0
+
+
 def test_format_results_reports_percentages_matching_paper_tables():
     # Neururer et al. 2024 Tables 1/2 report MR/EER as mean/SD on a 0-100 scale
     # (e.g. MR mean/SD of 37.50/4.18, EER up to 23.41), while the metric

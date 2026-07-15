@@ -9,7 +9,7 @@ data:
   segment_duration: 1.0
 
 model:
-  type: "CNN"
+  type: "CNN"             # or "Conformer" (see configs/conformer_timit.yaml + the `conformer:` section it adds)
 
 loss:
   type: "ANGULAR_MARGIN"

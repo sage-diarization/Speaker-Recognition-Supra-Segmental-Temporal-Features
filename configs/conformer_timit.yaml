@@ -9,7 +9,16 @@ data:
   segment_duration: 1.0
 
 model:
-  type: "CNN"             # or "Conformer" (see configs/conformer_timit.yaml + the `conformer:` section it adds)
+  type: "Conformer"
+
+conformer:
+  encoder_dim: 144        # Gulati et al. 2020 Conformer(S) dimension
+  num_layers: 4            # paper uses 16 for LibriSpeech ASR; scaled down for TIMIT-scale segments
+  num_heads: 4
+  ff_expansion_factor: 4
+  conv_kernel_size: 31     # must be odd; paper's Table 1 rounds this to 32
+  dropout: 0.1
+  use_relative_positional_encoding: true
 
 loss:
   type: "ANGULAR_MARGIN"

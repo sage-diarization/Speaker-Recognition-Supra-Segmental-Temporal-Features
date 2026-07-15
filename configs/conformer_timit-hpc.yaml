@@ -5,11 +5,20 @@ data:
   timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree
   archive_path: ""        # or a local .zip of your own licensed TIMIT copy
   download_url: "https://murena.io/public.php/dav/files/6rcWL6H4DQdJ4Yj/?accept=zip"        # or a URL to YOUR OWN hosted copy (see src/README.md)
-  cache_dir: "~/.cache/sst-experiment/timit"
+  cache_dir: "/scratch/timit"
   segment_duration: 1.0
 
 model:
-  type: "CNN"             # or "Conformer" (see configs/conformer_timit.yaml + the `conformer:` section it adds)
+  type: "Conformer"
+
+conformer:
+  encoder_dim: 144        # Gulati et al. 2020 Conformer(S) dimension
+  num_layers: 4            # paper uses 16 for LibriSpeech ASR; scaled down for TIMIT-scale segments
+  num_heads: 4
+  ff_expansion_factor: 4
+  conv_kernel_size: 31     # must be odd; paper's Table 1 rounds this to 32
+  dropout: 0.1
+  use_relative_positional_encoding: true
 
 loss:
   type: "ANGULAR_MARGIN"
@@ -25,6 +34,6 @@ evaluation:
 wandb:
   enabled: false          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
   project: "speaker-verification"
-  entity: ""              # your wandb entity/team, "" = your default
+  entity: "marbetschar-zhaw"              # your wandb entity/team, "" = your default
   mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
   tags: []

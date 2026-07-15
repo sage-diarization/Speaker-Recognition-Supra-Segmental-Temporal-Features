@@ -1,9 +1,7 @@
-from collections import namedtuple
-
 import torch
 import torch.nn as nn
 
-BackendOutput = namedtuple("BackendOutput", ["backend", "bottleneck"])
+from .common import BackendOutput
 
 
 class CNNBackend(nn.Module):

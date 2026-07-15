@@ -1,7 +1,9 @@
 from .cnn import build_cnn
+from .conformer import build_conformer
 
 MODEL_REGISTRY = {
     "CNN": build_cnn,
+    "Conformer": build_conformer,
 }
 
 

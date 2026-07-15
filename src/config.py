@@ -44,6 +44,26 @@ class ModelConfig:
 
 
 @dataclass
+class ConformerConfig:
+    """Gulati et al. 2020 Conformer encoder hyperparameters. Defaults follow
+    the paper's Conformer(S) dimensions (encoder_dim=144, num_heads=4,
+    conv_kernel_size=31 -- the paper's Table 1 rounds this to 32, but the
+    convolution module requires an odd kernel for symmetric SAME padding),
+    except num_layers, which the paper sets to 16 for LibriSpeech ASR; that's
+    substantially more compute than this project's short TIMIT segments
+    warrant, so it defaults to 4 here (override in config to match the
+    paper's scale)."""
+
+    encoder_dim: int = 144
+    num_layers: int = 4
+    num_heads: int = 4
+    ff_expansion_factor: int = 4
+    conv_kernel_size: int = 31
+    dropout: float = 0.1
+    use_relative_positional_encoding: bool = True
+
+
+@dataclass
 class LossConfig:
     type: str = "ANGULAR_MARGIN"
     margin_cosface: float = 0.3
@@ -90,6 +110,7 @@ class ExperimentConfig:
     transformation: TransformationConfig = field(default_factory=TransformationConfig)
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    conformer: ConformerConfig = field(default_factory=ConformerConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -115,6 +136,7 @@ class ExperimentConfig:
             ("transformation", TransformationConfig),
             ("data", DataConfig),
             ("model", ModelConfig),
+            ("conformer", ConformerConfig),
             ("loss", LossConfig),
             ("optimizer", OptimizerConfig),
             ("training", TrainingConfig),
