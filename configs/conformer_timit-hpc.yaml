@@ -32,7 +32,7 @@ evaluation:
   sc_utterances_per_speaker: 2
 
 wandb:
-  enabled: false          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
   project: "speaker-verification"
   entity: "marbetschar-zhaw"              # your wandb entity/team, "" = your default
   mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
