@@ -4,6 +4,7 @@ numpy
 scipy
 scikit-learn
 soundfile
+matplotlib
 pyyaml
 wandb
 pytest
