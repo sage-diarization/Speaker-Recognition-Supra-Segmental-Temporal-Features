@@ -2,6 +2,8 @@ import argparse
 import statistics
 from typing import NamedTuple
 
+import numpy as np
+
 from . import tracking
 from .config import ExperimentConfig
 from .data.dataset import SegmentDataset, featurize_waveform
@@ -42,17 +44,26 @@ def _featurize_split(corpus, split, transformation):
     return utterances, label_map
 
 
-def select_clustering_subset(utterances, num_speakers, utterances_per_speaker):
-    """Picks a fixed number of speakers and utterances/speaker for the SC
-    task (a reasonable-fidelity stand-in for the paper's exact "2 and 8
-    concatenated sentences per 40 speakers" protocol, whose original TIMIT
-    list files aren't recoverable from context/src)."""
-    speakers = sorted({label for _, label in utterances})[:num_speakers]
-    subset = []
-    for speaker in speakers:
-        speaker_utterances = [u for u in utterances if u[1] == speaker]
-        subset.extend(speaker_utterances[:utterances_per_speaker])
-    return subset
+def build_sc_utterances(corpus, split, transformation, num_speakers):
+    """Builds the SC task's per-speaker utterances by concatenating sentences
+    rather than using single raw sentences, per Neururer et al. 2024 Section
+    2.2: "2 utterances (comprising 2 and 8 concatenated sentences) per 40
+    speakers". Sentences are sorted deterministically (not left in TIMIT's
+    filesystem-extraction order, which is arbitrary per speaker) before being
+    split into a short (first 2) and long (remaining) concatenation; for
+    standard TIMIT's 10-sentences-per-speaker layout this reproduces the
+    paper's 2-vs-8 split (the original speaker-list files that pick the 40
+    speakers themselves aren't recoverable from context/src, so we take the
+    first num_speakers sorted by speaker id instead)."""
+    speakers = corpus.speakers(split)[:num_speakers]
+    utterances = []
+    for label, speaker in enumerate(speakers):
+        paths = sorted(corpus.utterance_paths(split, speaker))
+        for group in (paths[:2], paths[2:]):
+            waveform = np.concatenate([corpus.load_waveform(path)[0] for path in group])
+            features = featurize_waveform(waveform, transformation)
+            utterances.append((features, label))
+    return utterances
 
 
 def run_experiment(config, corpus=None):
@@ -66,9 +77,7 @@ def run_experiment(config, corpus=None):
     train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation)
     test_utterances, _ = _featurize_split(corpus, "TEST", transformation)
 
-    sc_utterances = select_clustering_subset(
-        test_utterances, config.evaluation.sc_num_speakers, config.evaluation.sc_utterances_per_speaker
-    )
+    sc_utterances = build_sc_utterances(corpus, "TEST", transformation, config.evaluation.sc_num_speakers)
 
     results = {"SV": {}, "SC": {}}
     for train_strategy in STRATEGIES:

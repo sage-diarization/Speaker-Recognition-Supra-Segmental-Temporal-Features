@@ -16,7 +16,6 @@ def small_config():
     config.training.num_epochs = 3
     config.training.batch_size = 4
     config.evaluation.sc_num_speakers = 3
-    config.evaluation.sc_utterances_per_speaker = 2
     return config
 
 

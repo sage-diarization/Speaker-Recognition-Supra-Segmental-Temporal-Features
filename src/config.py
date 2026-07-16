@@ -91,7 +91,6 @@ class EvaluationConfig:
     segment_draw: str = "OS"
     sv_max_sentences: int = 0
     sc_num_speakers: int = 40
-    sc_utterances_per_speaker: int = 2
 
 
 @dataclass

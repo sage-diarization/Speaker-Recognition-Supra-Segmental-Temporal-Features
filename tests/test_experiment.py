@@ -5,21 +5,8 @@ import pytest
 
 from src import experiment as experiment_module
 from src.config import ExperimentConfig
-from src.experiment import RunStatistics, STRATEGIES, format_results, run_experiment, select_clustering_subset
+from src.experiment import RunStatistics, STRATEGIES, build_sc_utterances, format_results, run_experiment
 from tests.conftest import make_synthetic_waveform
-
-
-def test_select_clustering_subset_limits_speakers_and_utterances():
-    utterances = []
-    for speaker in range(6):
-        for _ in range(5):
-            utterances.append((object(), speaker))
-
-    subset = select_clustering_subset(utterances, num_speakers=3, utterances_per_speaker=2)
-
-    speakers_present = {label for _, label in subset}
-    assert speakers_present == {0, 1, 2}
-    assert len(subset) == 6
 
 
 class _StubCorpus:
@@ -42,13 +29,40 @@ class _StubCorpus:
         return self._waveforms_by_split[split][speaker_id][i], 16000
 
 
+def test_build_sc_utterances_splits_short_and_long_per_speaker():
+    # Neururer et al. 2024 Section 2.2's SC protocol clusters, per speaker,
+    # one utterance built from 2 concatenated sentences and one from the
+    # remaining sentences (8 for standard TIMIT's 10-sentences-per-speaker
+    # layout) -- not raw single sentences.
+    waveforms = {"TEST": {}}
+    for speaker in range(4):
+        speaker_id = f"SPK{speaker}"
+        waveforms["TEST"][speaker_id] = [
+            make_synthetic_waveform(200 + 150 * speaker, 1.0, 16000, seed=speaker * 10 + i) for i in range(5)
+        ]
+    corpus = _StubCorpus(waveforms)
+    transformation = ExperimentConfig().transformation
+
+    utterances = build_sc_utterances(corpus, "TEST", transformation, num_speakers=2)
+
+    labels_present = {label for _, label in utterances}
+    assert labels_present == {0, 1}
+    assert len(utterances) == 4  # 2 speakers x (short, long)
+
+    lengths_by_speaker = {}
+    for features, label in utterances:
+        lengths_by_speaker.setdefault(label, []).append(features.shape[0])
+    for lengths in lengths_by_speaker.values():
+        assert len(lengths) == 2
+        assert min(lengths) < max(lengths)  # short (2 sentences) vs. long (remaining 3)
+
+
 def test_run_experiment_end_to_end_on_synthetic_corpus():
     config = ExperimentConfig()
     config.training.num_epochs = 3
     config.training.batch_size = 4
     config.loss.type = "SOFTMAX"
     config.evaluation.sc_num_speakers = 2
-    config.evaluation.sc_utterances_per_speaker = 2
     config.num_runs = 1
 
     waveforms = {"TRAIN": {}, "TEST": {}}
@@ -95,7 +109,6 @@ def test_run_experiment_end_to_end_with_conformer_model():
     config.training.batch_size = 4
     config.loss.type = "SOFTMAX"
     config.evaluation.sc_num_speakers = 2
-    config.evaluation.sc_utterances_per_speaker = 2
     config.num_runs = 1
 
     waveforms = {"TRAIN": {}, "TEST": {}}
@@ -168,7 +181,6 @@ def test_run_experiment_resolves_auto_device_onto_the_config(monkeypatch):
     config.training.batch_size = 2
     config.loss.type = "SOFTMAX"
     config.evaluation.sc_num_speakers = 2
-    config.evaluation.sc_utterances_per_speaker = 1
     config.num_runs = 1
     assert config.device == "auto"
 
@@ -183,7 +195,6 @@ def test_run_experiment_honors_an_explicit_device_override():
     config.training.batch_size = 2
     config.loss.type = "SOFTMAX"
     config.evaluation.sc_num_speakers = 2
-    config.evaluation.sc_utterances_per_speaker = 1
     config.num_runs = 1
     config.device = "cpu"
 
@@ -211,7 +222,6 @@ def test_run_experiment_logs_wandb_summary_on_a_0_100_scale(monkeypatch):
     config.training.batch_size = 2
     config.loss.type = "SOFTMAX"
     config.evaluation.sc_num_speakers = 2
-    config.evaluation.sc_utterances_per_speaker = 1
     config.num_runs = 1
 
     results = run_experiment(config, corpus=_tiny_stub_corpus())
@@ -262,7 +272,6 @@ def test_run_experiment_aggregates_mean_and_std_over_num_runs(monkeypatch):
     config.training.batch_size = 2
     config.loss.type = "SOFTMAX"
     config.evaluation.sc_num_speakers = 2
-    config.evaluation.sc_utterances_per_speaker = 1
     config.num_runs = 3
 
     results = run_experiment(config, corpus=_tiny_stub_corpus())
