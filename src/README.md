@@ -32,6 +32,16 @@ structure and mean/SD reporting of the paper's Tables 1/2, not the exact
 numbers — the original list-file splits for dev/final partitions aren't
 recoverable from the reference repo).
 
+Each run periodically evaluates dev-set SV EER during training (11 evenly
+spaced epochs, matching `context/src/utils.py`'s `TEST_EPOCHS` default) and
+keeps the best-scoring checkpoint's weights, matching `context/src`'s
+`EvalCallback` + `get_reference_data`: the paper's Tables 1/2 numbers come
+from that best dev checkpoint, not from whatever state training happens to
+end in. The dev set reuses the held-out TEST-split utterances (the same pool
+the "full" final numbers are drawn from), since the original's own
+`development` list is itself a subset of that pool rather than a
+disjoint speaker split.
+
 - **OS** (Original Segment): a contiguous crop — has both FBA and SST.
 - **SS** (Shuffled within Segment): the OS crop with frame order destroyed.
 - **SU** (Shuffled within Utterance): frames drawn from a wider window.

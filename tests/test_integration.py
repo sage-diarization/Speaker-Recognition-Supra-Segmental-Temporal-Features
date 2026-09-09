@@ -1,4 +1,7 @@
+import copy
 import itertools
+
+import torch
 
 from src.config import ExperimentConfig
 from src.data.dataset import SegmentDataset
@@ -6,6 +9,7 @@ from src.evaluation.clustering import best_misclassification_rate
 from src.evaluation.verification import equal_error_rate
 from src.models.losses import build_loss
 from src.models.registry import build_model
+from src.training import trainer
 from src.training.trainer import extract_embeddings, train
 
 STRATEGIES = ("OS", "SS", "SU")
@@ -62,3 +66,49 @@ def test_full_train_eval_grid_produces_valid_metrics(synthetic_utterances):
 
             mr = best_misclassification_rate(sv_embeddings, sv_labels)
             assert 0.0 <= mr <= 1.0
+
+
+def test_train_keeps_best_dev_checkpoint_not_the_final_epoch(monkeypatch, small_config, synthetic_utterances):
+    # Neururer et al. 2024's reported numbers come from the best dev-EER
+    # checkpoint seen during training (context/src's EvalCallback +
+    # get_reference_data), not from whatever state training happens to end
+    # in. Here dev EER strictly worsens after the very first checkpoint, so
+    # the model's weights after train() must match that first checkpoint,
+    # not the fully-trained final epoch.
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    small_config.loss.type = "SOFTMAX"
+    segment_length = small_config.data.segment_length(small_config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(small_config)
+    loss_module = build_loss(small_config, bottleneck_dim=512, num_speakers=3)
+
+    eer_sequence = iter([0.05, 0.4, 0.6, 0.8, 0.9])
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
+
+    captured_states = []
+    real_deepcopy = copy.deepcopy
+
+    def _capturing_deepcopy(obj, memo=None):
+        is_top_level_call = memo is None  # recursive internal deepcopy calls pass a memo dict
+        state = real_deepcopy(obj, memo)
+        if is_top_level_call:
+            captured_states.append(state)
+        return state
+
+    monkeypatch.setattr(trainer.copy, "deepcopy", _capturing_deepcopy)
+
+    train(
+        model, loss_module, dataset, small_config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+    )
+
+    # Only the first checkpoint ever improves on the running-best dev EER, so
+    # exactly one checkpoint gets captured -- but training continues for two
+    # more epochs afterwards, so this only passes if the final weights were
+    # actually rolled back rather than left at the (worse) last epoch.
+    assert len(captured_states) == 1
+    first_checkpoint_state = captured_states[0]
+    final_state = model.state_dict()
+    for key in first_checkpoint_state:
+        assert torch.equal(final_state[key], first_checkpoint_state[key])

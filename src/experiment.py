@@ -98,7 +98,14 @@ def run_experiment(config, corpus=None):
             dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
-            train(model, loss_module, dataset, config, run=run, device=config.device)
+            # dev_utterances=test_utterances + draw_strategy=train_strategy matches
+            # context/src's periodic dev-set EER checkpointing (Neururer et al. 2024's
+            # reported numbers come from the best such checkpoint, not the final epoch).
+            train(
+                model, loss_module, dataset, config,
+                dev_utterances=test_utterances, segment_length=segment_length, draw_strategy=train_strategy,
+                run=run, device=config.device,
+            )
 
             # summary reports this single run's numbers as percentages, matching
             # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
