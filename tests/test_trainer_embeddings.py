@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from src.models.common import BackendOutput
-from src.training import trainer
 from src.training.trainer import extract_embeddings
 
 
@@ -23,61 +22,89 @@ class _MeanModel:
         return BackendOutput(backend=backend.unsqueeze(-1), bottleneck=None)
 
 
-def _fake_draw_returning(values):
-    values = iter(values)
-
-    def draw(features, segment_length, rng):
-        return np.full((segment_length, features.shape[1]), float(next(values)))
-
-    return draw
+def _os_windows(features, segment_length, step, num_windows):
+    return [features[i * step:i * step + segment_length] for i in range(num_windows)]
 
 
-def test_extract_embeddings_averages_all_hop_windows(monkeypatch):
-    """context/src/generator/generator.py:399 averages the embeddings of
-    every hop-window segment drawn from an utterance (step = 0.5 *
-    segment_length, i.e. 'H50') into one per-utterance embedding, instead of
-    embedding a single random segment. This locks in both the hop-window
-    count formula (matching context/src/setup/setup.py's
-    `while (current_start + segment_length) <= sample_length` loop) and the
-    averaging itself."""
-    segment_length = 10
-    utterance_length = 40  # windows start at 0,5,10,15,20,25,30 -> 7 windows
+def test_extract_embeddings_averages_sequential_hop_windows():
+    """OS windows must walk sequential, evenly-spaced start positions
+    (matching context/src/setup/setup.py's `current_start += step` loop),
+    not a fresh random position per window -- otherwise averaging no longer
+    guarantees systematic coverage of the whole utterance."""
+    segment_length, step, utterance_length = 10, 5, 40  # windows at 0,5,...,30 -> 7 windows
+    features = np.arange(utterance_length, dtype=np.float64)[:, None] * np.ones((1, 3))
 
-    monkeypatch.setattr(
-        trainer, "DRAW_STRATEGIES", {"OS": _fake_draw_returning(range(7))}
-    )
-
-    features = np.zeros((utterance_length, 3))
     embeddings, labels = extract_embeddings(_MeanModel(), [(features, 5)], segment_length, "OS")
 
-    np.testing.assert_allclose(embeddings[0, 0], np.mean(range(7)))
+    expected_windows = _os_windows(features, segment_length, step, 7)
+    expected = np.mean([w.mean() for w in expected_windows])
+    np.testing.assert_allclose(embeddings[0, 0], expected)
     assert labels[0] == 5
 
 
-def test_extract_embeddings_uses_single_window_for_short_utterance(monkeypatch):
+def test_extract_embeddings_uses_single_window_for_short_utterance():
     """An utterance only slightly longer than segment_length has just one
-    hop window, matching the original loop's guaranteed first iteration --
-    same behavior as before the hop-averaging fix."""
+    hop window, matching the original loop's guaranteed first iteration."""
     segment_length = 10
-    monkeypatch.setattr(trainer, "DRAW_STRATEGIES", {"OS": _fake_draw_returning([42.0])})
+    features = np.arange(segment_length + 1, dtype=np.float64)[:, None] * np.ones((1, 3))
 
-    features = np.zeros((segment_length + 1, 3))
     embeddings, _ = extract_embeddings(_MeanModel(), [(features, 0)], segment_length, "OS")
 
-    assert embeddings[0, 0] == pytest.approx(42.0)
+    assert embeddings[0, 0] == pytest.approx(features[:segment_length].mean())
 
 
-def test_extract_embeddings_hop_fraction_controls_window_count(monkeypatch):
+def test_extract_embeddings_hop_fraction_controls_window_count():
     """hop_fraction=1.0 ('H100', non-overlapping windows) should draw fewer,
     non-overlapping windows than the default 0.5 ('H50')."""
-    segment_length = 10
-    utterance_length = 40
-
-    monkeypatch.setattr(trainer, "DRAW_STRATEGIES", {"OS": _fake_draw_returning(range(100))})
-    features = np.zeros((utterance_length, 3))
+    segment_length, utterance_length = 10, 40
+    features = np.arange(utterance_length, dtype=np.float64)[:, None] * np.ones((1, 3))
 
     embeddings, _ = extract_embeddings(
         _MeanModel(), [(features, 0)], segment_length, "OS", hop_fraction=1.0
     )
-    # windows at 0,10,20,30 -> 4 windows, values 0..3
-    np.testing.assert_allclose(embeddings[0, 0], np.mean(range(4)))
+
+    expected_windows = _os_windows(features, segment_length, 10, 4)  # starts 0,10,20,30
+    expected = np.mean([w.mean() for w in expected_windows])
+    np.testing.assert_allclose(embeddings[0, 0], expected)
+
+
+def test_extract_embeddings_ss_shuffles_frame_order_within_each_window():
+    """SS windows are the same contiguous crop as OS but with frame order
+    destroyed, freshly reshuffled per window (matching setup.py's
+    per-iteration np.random.shuffle(rseg_dist))."""
+    segment_length = 6
+    features = np.arange(segment_length + 1, dtype=np.float64)[:, None] * np.ones((1, 3))
+    captured = {}
+
+    class _CapturingModel(_MeanModel):
+        def __call__(self, x):
+            captured["x"] = x.clone()
+            return super().__call__(x)
+
+    extract_embeddings(_CapturingModel(), [(features, 0)], segment_length, "SS", seed=0)
+
+    window = captured["x"][0, 0].numpy()
+    np.testing.assert_allclose(sorted(window[:, 0]), features[:segment_length, 0])
+    assert not np.array_equal(window[:, 0], features[:segment_length, 0])
+
+
+def test_extract_embeddings_su_draws_with_replacement_from_whole_utterance():
+    """SU/RF must draw segment_length frames with replacement from the
+    *entire* utterance for every window (matching setup.py's
+    np.random.choice(time_dist, segment_length)), not from a bounded local
+    sub-window (that's src/data/segments.py::draw_su's on-the-fly *training*
+    sampler behavior, ported from context/src/generator/sampler.py::load_RF).
+    This is the dominant source of the SC misclassification-rate gap against
+    Neururer et al. 2024's Table 1 for long, multi-sentence SC utterances."""
+    segment_length, step, utterance_length, seed = 4, 2, 10, 0  # windows at 0,2,4,6,8 -> 4 windows... see below
+    num_windows = (utterance_length - segment_length) // step + 1
+    features = np.arange(utterance_length, dtype=np.float64)[:, None] * np.ones((1, 3))
+
+    embeddings, _ = extract_embeddings(_MeanModel(), [(features, 0)], segment_length, "SU", seed=seed)
+
+    reference_rng = np.random.default_rng(seed)
+    expected_means = []
+    for _ in range(num_windows):
+        indices = reference_rng.integers(0, utterance_length, segment_length)
+        expected_means.append(features[indices].mean())
+    np.testing.assert_allclose(embeddings[0, 0], np.mean(expected_means))

@@ -5,7 +5,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from .. import tracking
-from ..data.segments import DRAW_STRATEGIES
 from ..evaluation.verification import equal_error_rate
 
 
@@ -68,19 +67,51 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     return history
 
 
+def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng):
+    """Builds the num_windows hop-window segments for one utterance, matching
+    context/src/setup/setup.py's precomputed EVAL distributions -- the ones
+    context/src/generator/sampler.py::load_test actually reads at test time
+    -- rather than src/data/segments.py's on-the-fly *training* sampler
+    (a port of context/src/generator/sampler.py::load_OT/RS/RF), which draws
+    a fresh random position per call. OS/SS windows walk
+    sequential, evenly-spaced start positions (current_start stepping by
+    `step`) instead of resampling a random position each time; SS also
+    reshuffles each window's frame order fresh, matching setup.py's
+    per-iteration np.random.shuffle(rseg_dist). SU -- 'RF' -- draws
+    segment_length frames with replacement from the *entire* utterance for
+    every window (np.random.choice(time_dist, segment_length), time_dist
+    spanning the whole utterance), independent of hop position -- not the
+    bounded local sub-window that src/data/segments.py::draw_su uses for
+    on-the-fly training batches. That bounded-window/full-utterance
+    distinction barely matters for single-sentence SV test utterances but is
+    the dominant source of the SC misclassification-rate gap against
+    Neururer et al. 2024's Table 1, since SC test utterances are much
+    longer (2-8 concatenated sentences)."""
+    if draw_strategy == "SU":
+        length = features.shape[0]
+        return [features[rng.integers(0, length, segment_length)] for _ in range(num_windows)]
+    segments = []
+    for i in range(num_windows):
+        start = i * step
+        segment = features[start:start + segment_length].copy()
+        if draw_strategy == "SS":
+            rng.shuffle(segment)
+        segments.append(segment)
+    return segments
+
+
 def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=None, device="cpu", hop_fraction=0.5):
-    """Draws multiple overlapping segments per utterance via a sliding hop
-    window (step = hop_fraction * segment_length; hop_fraction=0.5, i.e.
-    'H50', is the setting Neururer et al. 2024's actual Table 1/2 numbers
-    come from -- context/src/evaluation/utils.py hardcodes 'H50' into its
-    reference-lookup key) and averages their embeddings into one
-    per-utterance embedding, matching
-    context/src/generator/generator.py:399's
-    np.mean(current_embeddings[indices], axis=0) over hop-window embeddings.
-    A single segment's worth of utterance just yields that one segment's
-    embedding, matching the original's `while (current_start + segment_length)
-    <= sample_length` loop, which always runs at least once."""
-    draw_fn = DRAW_STRATEGIES[draw_strategy]
+    """Draws multiple hop-window segments per utterance (step =
+    hop_fraction * segment_length; hop_fraction=0.5, i.e. 'H50', is the
+    setting Neururer et al. 2024's actual Table 1/2 numbers come from --
+    context/src/evaluation/utils.py hardcodes 'H50' into its reference-lookup
+    key) and averages their embeddings into one per-utterance embedding,
+    matching context/src/generator/generator.py:399's
+    np.mean(current_embeddings[indices], axis=0) over hop-window embeddings
+    (see _eval_windows for how each window is drawn). A single segment's
+    worth of utterance just yields that one segment's embedding, matching
+    the original's `while (current_start + segment_length) <= sample_length`
+    loop, which always runs at least once."""
     rng = np.random.default_rng(seed)
     step = max(int(hop_fraction * segment_length), 1)
 
@@ -92,7 +123,7 @@ def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=No
             if length <= segment_length:
                 continue
             num_windows = (length - segment_length) // step + 1
-            segments = [draw_fn(features, segment_length, rng) for _ in range(num_windows)]
+            segments = _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng)
             tensor = torch.from_numpy(np.stack(segments)).float().unsqueeze(1).to(device)
             output = model(tensor)
             embeddings.append(output.backend.mean(dim=0).cpu().numpy())
