@@ -68,21 +68,33 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     return history
 
 
-def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=None, device="cpu"):
-    """Draws one segment per utterance (via the given strategy) and returns
-    the model's backend (1024-d) embedding for each, plus their labels."""
+def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=None, device="cpu", hop_fraction=0.5):
+    """Draws multiple overlapping segments per utterance via a sliding hop
+    window (step = hop_fraction * segment_length; hop_fraction=0.5, i.e.
+    'H50', is the setting Neururer et al. 2024's actual Table 1/2 numbers
+    come from -- context/src/evaluation/utils.py hardcodes 'H50' into its
+    reference-lookup key) and averages their embeddings into one
+    per-utterance embedding, matching
+    context/src/generator/generator.py:399's
+    np.mean(current_embeddings[indices], axis=0) over hop-window embeddings.
+    A single segment's worth of utterance just yields that one segment's
+    embedding, matching the original's `while (current_start + segment_length)
+    <= sample_length` loop, which always runs at least once."""
     draw_fn = DRAW_STRATEGIES[draw_strategy]
     rng = np.random.default_rng(seed)
+    step = max(int(hop_fraction * segment_length), 1)
 
     model.eval()
     embeddings, labels = [], []
     with torch.no_grad():
         for features, label in utterances:
-            if features.shape[0] <= segment_length:
+            length = features.shape[0]
+            if length <= segment_length:
                 continue
-            segment = draw_fn(features, segment_length, rng)
-            tensor = torch.from_numpy(segment).float().unsqueeze(0).unsqueeze(0).to(device)
+            num_windows = (length - segment_length) // step + 1
+            segments = [draw_fn(features, segment_length, rng) for _ in range(num_windows)]
+            tensor = torch.from_numpy(np.stack(segments)).float().unsqueeze(1).to(device)
             output = model(tensor)
-            embeddings.append(output.backend.squeeze(0).cpu().numpy())
+            embeddings.append(output.backend.mean(dim=0).cpu().numpy())
             labels.append(label)
     return np.stack(embeddings), np.array(labels)
