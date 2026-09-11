@@ -2,14 +2,17 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .features import apply_drc, compute_mel_spectrogram, normalise_standardize
+from .features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
 from .segments import DRAW_STRATEGIES
 
 
 def featurize_waveform(waveform, transformation_config):
-    mel = compute_mel_spectrogram(waveform, transformation_config)
-    mel = apply_drc(mel)
-    return normalise_standardize(mel)
+    if transformation_config.type == "linear":
+        spectrogram = compute_linear_spectrogram(waveform, transformation_config)
+    else:
+        spectrogram = compute_mel_spectrogram(waveform, transformation_config)
+    spectrogram = apply_drc(spectrogram)
+    return normalise_standardize(spectrogram)
 
 
 class SegmentDataset(Dataset):

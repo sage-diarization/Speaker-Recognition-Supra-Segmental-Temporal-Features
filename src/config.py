@@ -11,6 +11,13 @@ class TransformationConfig:
     n_mels: int = 128
     fmin: float = 0.0
     fmax: float = 8000.0
+    # "mel" (default, matches CNN/RNN's DeepVoice front-end) or "linear" (raw
+    # magnitude spectrogram, no mel filterbank -- matches ResNet's front-end,
+    # context/src/00_configs/01_transformation/ResNet.json's "SPECTROGRAM" type).
+    type: str = "mel"
+    # "hann" (default) or "hamming" -- ResNet's front-end uses hamming
+    # (context/src/setup/utils.py's window_map).
+    window: str = "hann"
 
     @property
     def frame_length(self):
@@ -23,6 +30,10 @@ class TransformationConfig:
     @property
     def steps_per_second(self):
         return int((self.sample_rate + self.frame_step - self.frame_length) / self.frame_step)
+
+    @property
+    def num_freqs(self):
+        return self.n_mels if self.type == "mel" else self.nfft // 2 + 1
 
 
 @dataclass
@@ -64,6 +75,24 @@ class ConformerConfig:
 
 
 @dataclass
+class RNNConfig:
+    """context/src/models/backend/LSTM.py hyperparameters (hidden_size=512
+    per direction, matching the paper's RNN [13])."""
+
+    hidden_size: int = 512
+
+
+@dataclass
+class ResNetConfig:
+    """context/src/models/backend/ResNet34s.py + its GhostVLAD aggregation
+    (context/src/00_configs/06_aggregation/GVLAD.json) hyperparameters."""
+
+    vlad_clusters: int = 10
+    ghost_clusters: int = 2
+    bottleneck: int = 512
+
+
+@dataclass
 class LossConfig:
     type: str = "ANGULAR_MARGIN"
     margin_cosface: float = 0.3
@@ -76,6 +105,9 @@ class LossConfig:
 class OptimizerConfig:
     type: str = "ADAM"
     learning_rate: float = 1e-4
+    # L2 weight decay -- 0.0 (off) matches CNN/Conformer/RNN's original recipes;
+    # ResNet's original config sets 1e-4 (context/src/00_configs/05_model/RES34S.json).
+    weight_decay: float = 0.0
 
 
 @dataclass
@@ -110,6 +142,8 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     conformer: ConformerConfig = field(default_factory=ConformerConfig)
+    rnn: RNNConfig = field(default_factory=RNNConfig)
+    resnet: ResNetConfig = field(default_factory=ResNetConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -136,6 +170,8 @@ class ExperimentConfig:
             ("data", DataConfig),
             ("model", ModelConfig),
             ("conformer", ConformerConfig),
+            ("rnn", RNNConfig),
+            ("resnet", ResNetConfig),
             ("loss", LossConfig),
             ("optimizer", OptimizerConfig),
             ("training", TrainingConfig),

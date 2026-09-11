@@ -1,0 +1,35 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER/MR mean+SD over (Neururer et al. 2024 Section 2.3)
+
+data:
+  timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree
+  archive_path: ""        # or a local .zip of your own licensed TIMIT copy
+  download_url: "https://murena.io/public.php/dav/files/6rcWL6H4DQdJ4Yj/?accept=zip"        # or a URL to YOUR OWN hosted copy (see src/README.md)
+  cache_dir: "~/.cache/sst-experiment/timit"
+  segment_duration: 1.0
+
+model:
+  type: "RNN"
+
+# transformation defaults (mel, hann window) already match context/src's
+# DeepVoice front-end, which the RNN (like the CNN) uses -- no overrides needed.
+
+rnn:
+  hidden_size: 512          # per-direction BiLSTM hidden size (context/src/models/backend/LSTM.py)
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  num_epochs: 128
+  batch_size: 100
+
+evaluation:
+  sc_num_speakers: 40
+
+wandb:
+  enabled: false          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: ""              # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

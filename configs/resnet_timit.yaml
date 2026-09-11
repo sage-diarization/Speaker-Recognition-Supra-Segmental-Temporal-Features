@@ -1,0 +1,49 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER/MR mean+SD over (Neururer et al. 2024 Section 2.3)
+
+data:
+  timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree
+  archive_path: ""        # or a local .zip of your own licensed TIMIT copy
+  download_url: "https://murena.io/public.php/dav/files/6rcWL6H4DQdJ4Yj/?accept=zip"        # or a URL to YOUR OWN hosted copy (see src/README.md)
+  cache_dir: "~/.cache/sst-experiment/timit"
+  segment_duration: 1.0
+
+model:
+  type: "ResNet"
+
+# ResNet34s's original front-end (context/src/00_configs/01_transformation/ResNet.json):
+# a raw (non-mel) magnitude spectrogram with a hamming window -- different
+# from CNN/RNN's mel front-end, per Neururer et al. 2024's stated policy of
+# keeping each model's own original recipe for comparability with prior work.
+transformation:
+  type: "linear"
+  window: "hamming"
+  nfft: 512
+  frame_length_s: 0.025
+  frame_step_s: 0.01
+
+resnet:
+  vlad_clusters: 10
+  ghost_clusters: 2
+  bottleneck: 512
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+optimizer:
+  learning_rate: 0.0001
+  weight_decay: 0.0001    # context/src/00_configs/05_model/RES34S.json's WEIGHT_DECAY
+
+training:
+  num_epochs: 128
+  batch_size: 100
+
+evaluation:
+  sc_num_speakers: 40
+
+wandb:
+  enabled: false          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: ""              # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

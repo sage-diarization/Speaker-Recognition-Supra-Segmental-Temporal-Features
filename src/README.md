@@ -1,4 +1,4 @@
-# Supra-segmental temporal feature test (CNN / Conformer)
+# Supra-segmental temporal feature test (CNN / RNN / ResNet / Conformer)
 
 PyTorch reimplementation of the Section 2 time-scrambling test from
 Neururer et al. 2024 ("Deep neural networks for automatic speaker
@@ -6,10 +6,25 @@ recognition do not learn supra-segmental temporal features"). See
 `../context/docs/` for the paper and `../context/src/` for the original
 TensorFlow reference implementation this was ported from.
 
-Two speaker-embedding backends are available via `model.type`:
+Four speaker-embedding backends are available via `model.type`:
 
 - `"CNN"` (default): a direct port of `context/src/models/backend/CNN.py`,
-  the backend Neururer et al. 2024 uses.
+  the CNN [12] backend of Neururer et al. 2024's Table 1/2.
+- `"RNN"`: a direct port of `context/src/models/backend/LSTM.py` (two
+  stacked bidirectional LSTMs), the RNN [13] backend. Shares the CNN's mel
+  front-end, so it reuses `configs/cnn_timit.yaml`'s `transformation:`
+  defaults (see `configs/rnn_timit.yaml`).
+- `"ResNet"`: a direct port of `context/src/models/backend/ResNet34s.py` +
+  its GhostVLAD aggregation (`context/src/models/aggregation/GhostVlad.py`),
+  the ResNet [27] backend. Unlike the other three backends, its original
+  front-end is a raw (non-mel) magnitude spectrogram with a hamming window
+  (`context/src/00_configs/01_transformation/ResNet.json`) -- see
+  `configs/resnet_timit.yaml`'s `transformation:`/`resnet:` sections and
+  `src/models/resnet.py`'s module docstrings. The paper's fourth model,
+  F-ResNet (Fast ResNet-34, sourced from the external
+  `github.com/clovaai/voxceleb_trainer` rather than `context/src`, and
+  called "out of competition" on TIMIT due to its VoxCeleb-tuned front-end),
+  isn't ported here.
 - `"Conformer"`: a from-scratch PyTorch implementation of the Gulati et al.
   2020 Conformer encoder ("Conformer: Convolution-augmented Transformer for
   Speech Recognition", see `../context/docs/`), adapted from an ASR encoder
@@ -18,10 +33,14 @@ Two speaker-embedding backends are available via `model.type`:
   details and configs/conformer_timit.yaml for its hyperparameters
   (`conformer:` section).
 
-Both expose the same `(backend, bottleneck)` output contract (see "Adding a
-new model backend" below), so switching `model.type` swaps only the
-embedding backbone -- everything else (loss, training loop, evaluation)
-stays identical, which is what makes the two runs comparable.
+All four expose the same `(backend, bottleneck)` output contract (see
+"Adding a new model backend" below), so switching `model.type` swaps only
+the embedding backbone -- everything else (loss, training loop, evaluation)
+stays identical, which is what makes the runs comparable. The one exception
+is ResNet's own front-end transformation (mel vs. linear spectrogram),
+which the original also varies per model for the same reason (Section 2.2:
+front-end/hyperparameters are kept faithful to each model's own source
+paper, not unified across models).
 
 Trains a speaker embedding model for each of the three training-time
 segment-draw strategies (OS/SS/SU), repeated `num_runs` times per strategy
@@ -65,6 +84,8 @@ Point the pipeline at your own licensed copy via `configs/cnn_timit.yaml`
 ```
 pip install -r requirements.txt
 python -m src.experiment --config configs/cnn_timit.yaml         # CNN backend
+python -m src.experiment --config configs/rnn_timit.yaml         # RNN backend
+python -m src.experiment --config configs/resnet_timit.yaml      # ResNet backend
 python -m src.experiment --config configs/conformer_timit.yaml   # Conformer backend
 ```
 
@@ -99,7 +120,9 @@ Register a `build_<name>(config) -> nn.Module` in `src/models/registry.py`'s
 `MODEL_REGISTRY`, where the module's `forward` returns a `(backend,
 bottleneck)` pair (see `src/models/common.py`'s `BackendOutput`; backend =
 evaluation embedding, bottleneck = the dimension the training loss operates
-on -- both CNN and Conformer use 1024-d/512-d, but a new backend isn't
-required to). Set `model.type` in the config to the new registry key, and
+on -- CNN/RNN/Conformer use 1024-d/512-d, but a new backend isn't required
+to: ResNet's original CUT=AGGREGATION setting means its backend and
+bottleneck are the same 512-d tensor, see `src/models/resnet.py`). Set
+`model.type` in the config to the new registry key, and
 add a `<name>: ExperimentConfig` section if the model needs its own
 hyperparameters (see `ConformerConfig` in `src/config.py`).

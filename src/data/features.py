@@ -3,25 +3,32 @@ import torch
 import torchaudio
 
 
-def compute_mel_spectrogram(waveform, config):
-    """Magnitude mel-spectrogram, (frames, n_mels), matching
-    context/src/setup/utils.py::transform_audio (hann STFT -> linear mel filterbank)."""
+def _stft_magnitude(waveform, config):
+    """STFT magnitude, (frames, nfft // 2 + 1), matching
+    context/src/setup/utils.py::transform_audio's tf.signal.stft step,
+    parameterized over config.window ('hann' or 'hamming') since different
+    original models use different windows (CNN/RNN's DeepVoice front-end
+    uses hann, ResNet's uses hamming).
+
+    Frames are cut and windowed manually (rather than via torch.stft)
+    because tf.signal.stft always frames by frame_length/frame_step and only
+    then zero-pads each frame up to fft_length; torch.stft instead frames by
+    n_fft whenever win_length != n_fft, which silently mismatches TF's frame
+    count for ResNet's front-end (frame_length=400 samples, nfft=512)."""
     if isinstance(waveform, np.ndarray):
         waveform = torch.from_numpy(waveform).float()
 
-    window = torch.hann_window(config.frame_length)
-    stft = torch.stft(
-        waveform,
-        n_fft=config.nfft,
-        hop_length=config.frame_step,
-        win_length=config.frame_length,
-        window=window,
-        center=False,
-        onesided=True,
-        return_complex=True,
-    )
-    magnitude = stft.abs().transpose(0, 1)
+    window_fn = torch.hamming_window if config.window == "hamming" else torch.hann_window
+    window = window_fn(config.frame_length)
+    frames = waveform.unfold(-1, config.frame_length, config.frame_step) * window
+    return torch.fft.rfft(frames, n=config.nfft).abs()
 
+
+def compute_mel_spectrogram(waveform, config):
+    """Magnitude mel-spectrogram, (frames, n_mels), matching
+    context/src/setup/utils.py::transform_audio's MEL_SPECTROGRAM path
+    (STFT -> linear mel filterbank)."""
+    magnitude = _stft_magnitude(waveform, config)
     mel_fb = torchaudio.functional.melscale_fbanks(
         n_freqs=magnitude.shape[-1],
         f_min=config.fmin,
@@ -31,6 +38,13 @@ def compute_mel_spectrogram(waveform, config):
     )
     mel = magnitude @ mel_fb
     return mel.numpy()
+
+
+def compute_linear_spectrogram(waveform, config):
+    """Raw magnitude spectrogram, (frames, nfft // 2 + 1), matching
+    context/src/setup/utils.py::transform_audio's SPECTROGRAM path (no mel
+    filterbank) -- ResNet's front-end (context/src/00_configs/01_transformation/ResNet.json)."""
+    return _stft_magnitude(waveform, config).numpy()
 
 
 def apply_drc(spectrogram):

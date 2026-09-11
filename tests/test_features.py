@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.data.features import apply_drc, compute_mel_spectrogram, normalise_standardize
+from src.data.features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
 from src.config import TransformationConfig
 
 
@@ -40,3 +40,32 @@ def test_mel_spectrogram_scales_with_duration():
     waveform = np.zeros(config.sample_rate * 2, dtype=np.float32)
     mel = compute_mel_spectrogram(waveform, config)
     assert mel.shape[0] > config.steps_per_second
+
+
+def test_linear_spectrogram_shape_matches_nfft_bins():
+    # ResNet's front-end (context/src/00_configs/01_transformation/ResNet.json):
+    # raw magnitude spectrogram, nfft // 2 + 1 frequency bins, no mel filterbank.
+    config = TransformationConfig(type="linear", window="hamming", nfft=512,
+                                   frame_length_s=0.025, frame_step_s=0.01)
+    waveform = np.zeros(config.sample_rate, dtype=np.float32)
+    spectrogram = compute_linear_spectrogram(waveform, config)
+    assert spectrogram.shape == (config.steps_per_second, config.nfft // 2 + 1)
+
+
+def test_transformation_config_num_freqs_depends_on_type():
+    mel_config = TransformationConfig(type="mel", n_mels=128)
+    assert mel_config.num_freqs == 128
+
+    linear_config = TransformationConfig(type="linear", nfft=512)
+    assert linear_config.num_freqs == 257
+
+
+def test_hamming_window_produces_different_spectrogram_than_hann():
+    hann_config = TransformationConfig(window="hann")
+    hamming_config = TransformationConfig(window="hamming")
+    rng = np.random.default_rng(0)
+    waveform = rng.normal(size=hann_config.sample_rate).astype(np.float32)
+
+    hann_spec = compute_mel_spectrogram(waveform, hann_config)
+    hamming_spec = compute_mel_spectrogram(waveform, hamming_config)
+    assert not np.allclose(hann_spec, hamming_spec)

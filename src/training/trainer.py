@@ -29,6 +29,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     optimizer = torch.optim.Adam(
         list(model.parameters()) + list(loss_module.parameters()),
         lr=config.optimizer.learning_rate,
+        weight_decay=config.optimizer.weight_decay,
     )
 
     checkpoint_epochs = _checkpoint_epochs(config.training.num_epochs) if dev_utterances is not None else set()

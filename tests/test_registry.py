@@ -5,6 +5,8 @@ from src.config import ExperimentConfig
 from src.models.cnn import CNNBackend
 from src.models.conformer import ConformerBackend
 from src.models.registry import build_model
+from src.models.resnet import ResNetBackend
+from src.models.rnn import RNNBackend
 
 
 def test_build_model_selects_cnn_by_default():
@@ -22,6 +24,26 @@ def test_build_model_selects_conformer():
     config.conformer.ff_expansion_factor = 2
     model = build_model(config)
     assert isinstance(model, ConformerBackend)
+
+
+def test_build_model_selects_rnn():
+    config = ExperimentConfig()
+    config.model.type = "RNN"
+    config.rnn.hidden_size = 8
+    model = build_model(config)
+    assert isinstance(model, RNNBackend)
+
+
+def test_build_model_selects_resnet():
+    config = ExperimentConfig()
+    config.model.type = "ResNet"
+    config.transformation.type = "linear"
+    config.transformation.nfft = 126  # num_freqs = 126 // 2 + 1 = 64, the smallest viable size
+    config.resnet.vlad_clusters = 4
+    config.resnet.ghost_clusters = 2
+    config.resnet.bottleneck = 16
+    model = build_model(config)
+    assert isinstance(model, ResNetBackend)
 
 
 def test_build_model_rejects_unknown_type():
