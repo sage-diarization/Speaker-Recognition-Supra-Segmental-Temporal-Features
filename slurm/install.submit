@@ -1,0 +1,32 @@
+#!/bin/bash
+
+CWD=$(pwd)
+
+export PYTHON_VERSION="3.13.12"
+export PYTHON_VENV="sst_experiment"
+
+export VENV_BASE_DIR="/raid/persistent_scratch/$USER/venvs"
+export VENV_PATH="$VENV_BASE_DIR/$PYTHON_VENV"
+
+# rm -Rf $VENV_PATH
+mkdir -p $VENV_BASE_DIR
+
+if [ -d "$VENV_PATH" ]; then
+    echo "Activating VENV $PYTHON_VENV..."
+    source "$VENV_PATH/bin/activate"
+else
+    echo "Creating VENV $PYTHON_VENV..."
+    module load python/$PYTHON_VERSION
+    virtualenv $VENV_PATH
+    source "$VENV_PATH/bin/activate"
+    unset PIP_TARGET
+    unset PYTHONPATH
+
+    echo "Install dependencies..."
+    pip3 install -r requirements.txt
+fi
+
+python --version
+nvidia-smi || rocm-smi
+
+CWD=$(pwd)
