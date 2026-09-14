@@ -5,6 +5,16 @@ from src.config import ExperimentConfig, TransformationConfig
 from src.data.dataset import featurize_waveform
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd_for_checkpoints(tmp_path, monkeypatch):
+    """run_experiment persists resume manifests/checkpoints under the
+    relative default training.checkpoint_dir ("checkpoints") -- chdir into a
+    fresh tmp dir for every test so no test can read stale "already
+    completed" state left behind by another test, or by a previous run of
+    the suite, and so the repo's own working tree never gets polluted."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def transformation_config():
     return TransformationConfig()

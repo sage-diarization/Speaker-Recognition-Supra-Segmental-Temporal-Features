@@ -38,6 +38,10 @@ class TransformationConfig:
 
 @dataclass
 class DataConfig:
+    # "TIMIT" (default) or "VoxCeleb" -- selects the corpus + evaluation task
+    # set in src/experiment.py, and is folded into wandb run names/tags so
+    # runs from different datasets are distinguishable at a glance.
+    dataset: str = "TIMIT"
     segment_duration: float = 1.0
     timit_root: str = ""
     archive_path: str = ""
@@ -116,6 +120,22 @@ class TrainingConfig:
     batch_size: int = 100
     segment_draw: str = "OS"
     num_speakers: int = 462
+    # Directory persisted checkpoints and resume manifests are written under
+    # (see src/training/trainer.py's checkpoint/resume support and
+    # src/experiment.py's per-sweep manifest).
+    checkpoint_dir: str = "checkpoints"
+    # Disk-checkpoint cadence: a checkpoint is written every this-many epochs
+    # (and always on the epoch that triggers early stopping or completes
+    # training), so a crashed run never has to redo more than this many
+    # epochs of dev-eval history. TIMIT's cheap epochs tolerate a coarser
+    # cadence (default 25); VoxCeleb's expensive epochs should checkpoint
+    # every single one (override to 1 in VoxCeleb configs).
+    checkpoint_every_epochs: int = 25
+    # Stop training once dev EER hasn't improved for this many epochs. The
+    # paper itself never stops early -- it always trains the full fixed
+    # schedule and reports the best dev checkpoint after the fact -- this is
+    # a pragmatic compute-saving addition on top of that.
+    early_stopping_patience: int = 15
 
 
 @dataclass

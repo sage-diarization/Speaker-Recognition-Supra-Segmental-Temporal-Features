@@ -51,15 +51,29 @@ structure and mean/SD reporting of the paper's Tables 1/2, not the exact
 numbers — the original list-file splits for dev/final partitions aren't
 recoverable from the reference repo).
 
-Each run periodically evaluates dev-set SV EER during training (11 evenly
-spaced epochs, matching `context/src/utils.py`'s `TEST_EPOCHS` default) and
-keeps the best-scoring checkpoint's weights, matching `context/src`'s
-`EvalCallback` + `get_reference_data`: the paper's Tables 1/2 numbers come
-from that best dev checkpoint, not from whatever state training happens to
-end in. The dev set reuses the held-out TEST-split utterances (the same pool
-the "full" final numbers are drawn from), since the original's own
-`development` list is itself a subset of that pool rather than a
-disjoint speaker split.
+Each run evaluates dev-set SV EER after *every* epoch and keeps the
+best-scoring checkpoint's weights, matching `context/src`'s `EvalCallback` +
+`get_reference_data`: the paper's Tables 1/2 numbers come from that best dev
+checkpoint, not from whatever state training happens to end in. The dev set
+reuses the held-out TEST-split utterances (the same pool the "full" final
+numbers are drawn from), since the original's own `development` list is
+itself a subset of that pool rather than a disjoint speaker split.
+
+Training stops early once dev EER hasn't improved for
+`training.early_stopping_patience` epochs (default 15) -- a pragmatic
+compute-saving addition on top of the paper's own methodology, which always
+trains the full fixed schedule and only picks the best checkpoint after the
+fact. A checkpoint is written to disk every `training.checkpoint_every_epochs`
+epochs (default 25; set to 1 for datasets with expensive epochs, see the
+VoxCeleb configs) under `training.checkpoint_dir`, and automatically resumed
+from -- including full bit-exact random state (torch's global RNG, the
+segment-draw RNG, and the dev-eval RNG) -- if that file already exists, so a
+crashed or requeued SLURM job continues the exact same training run rather
+than restarting it. Beyond the single in-progress run, `run_experiment`
+itself tracks which of a strategy's `num_runs` repeats are already complete
+in a small manifest alongside the checkpoints, so re-invoking
+`python -m src.experiment --config ...` after a crash skips straight past
+finished repeats instead of retraining them.
 
 - **OS** (Original Segment): a contiguous crop — has both FBA and SST.
 - **SS** (Shuffled within Segment): the OS crop with frame order destroyed.
@@ -97,16 +111,22 @@ CPU-only machine. Set it explicitly (e.g. `device: "cpu"`) to override.
 ## Tracking progress with wandb
 
 Set `wandb.enabled: true` in the config to track runs (see
-`configs/cnn_timit.yaml`). One wandb run is started per training-strategy
-per repeat (OS/SS/SU x `num_runs`), each with a live per-epoch `train/loss`
-curve and, once training finishes, the resulting SV/EER and SC/MR numbers
-against all three test strategies logged to that run's summary — this
-mirrors `context/src/train.py`'s per-run `wandb.init` + `EvalCallback`
-logging, minus the Keras-specific weight-histogram logging. Once all
-`num_runs` repeats of a training-strategy finish, one further
-`{model}-{strategy}-aggregate` wandb run logs the mean/SD of those repeats
-(`final/..._mean` / `final/..._std`), matching the mean/SD reported in
-Tables 1/2 of Neururer et al. 2024.
+`configs/cnn_timit.yaml`). One wandb run covers each (model, dataset,
+training-strategy) combination -- named e.g. `CNN-timit-OS` and tagged
+`[model.type, dataset, strategy]` so runs from different models/datasets are
+distinguishable at a glance -- and stays open across all of that strategy's
+`num_runs` repeats, since the individual repeats aren't independently
+interesting on their own (only their aggregate is). Each repeat's per-epoch
+`train/loss`/`dev/EER` curves are logged under a `run{idx}/` -prefixed key so
+they remain separately visible, and each repeat's final SV/SC numbers are
+logged the same way (`run{idx}/final/SV_EER_test-*`) as soon as that repeat
+finishes. Once all `num_runs` repeats are accounted for, the mean/SD
+(`final/..._mean` / `final/..._std`, matching Tables 1/2 of Neururer et al.
+2024) is logged to that same run's summary and the run is closed. If the
+process crashes and `python -m src.experiment --config ...` is re-invoked,
+the run is reattached (via an id persisted in the resume manifest, see
+above) rather than starting a new one, so a strategy's wandb history stays
+in one place across restarts.
 
 On a SLURM cluster whose compute nodes have no internet access, set
 `wandb.mode: "offline"` — logs are written locally and synced later with

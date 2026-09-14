@@ -49,7 +49,23 @@ def test_train_logs_loss_to_the_given_run_every_epoch(small_config, synthetic_ut
     run = _FakeRun()
     train(model, loss_module, dataset, small_config, run=run)
 
-    assert len(run.logged) == small_config.training.num_epochs
-    steps = [step for step, _ in run.logged]
-    assert steps == list(range(small_config.training.num_epochs))
-    assert all("train/loss" in metrics for _, metrics in run.logged)
+    loss_logs = [metrics for _, metrics in run.logged if "train/loss" in metrics]
+    assert len(loss_logs) == small_config.training.num_epochs
+
+
+def test_train_namespaces_metrics_by_run_idx_when_given(small_config, synthetic_utterances):
+    # run_idx distinguishes config.num_runs repeats sharing a single wandb
+    # run (see src/experiment.py's per-strategy run consolidation).
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    small_config.loss.type = "SOFTMAX"
+    segment_length = small_config.data.segment_length(small_config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(small_config)
+    loss_module = build_loss(small_config, bottleneck_dim=512, num_speakers=3)
+
+    run = _FakeRun()
+    train(model, loss_module, dataset, small_config, run=run, run_idx=2)
+
+    loss_logs = [metrics for _, metrics in run.logged if "run2/train/loss" in metrics]
+    assert len(loss_logs) == small_config.training.num_epochs

@@ -1,5 +1,8 @@
 import argparse
+import json
+import os
 import statistics
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
@@ -66,6 +69,43 @@ def build_sc_utterances(corpus, split, transformation, num_speakers):
     return utterances
 
 
+def _sweep_key(config, train_strategy):
+    return f"{config.model.type}-{config.data.dataset.lower()}-{train_strategy}"
+
+
+def _sweep_dir(config, train_strategy):
+    return Path(config.training.checkpoint_dir) / _sweep_key(config, train_strategy)
+
+
+def _checkpoint_path(config, train_strategy, run_idx):
+    return _sweep_dir(config, train_strategy) / f"run{run_idx}.pt"
+
+
+def _manifest_path(config, train_strategy):
+    return _sweep_dir(config, train_strategy) / "manifest.json"
+
+
+def _load_manifest(path):
+    """A sweep's resume state: which wandb run to reattach to, and each
+    already-completed repeat's raw SV/SC metrics (not just a "done" flag --
+    needed so the aggregate mean/SD recomputed after a resume is identical to
+    an uninterrupted run's)."""
+    if not path.exists():
+        return {"wandb_run_id": None, "completed": {}}
+    with open(path) as f:
+        manifest = json.load(f)
+    manifest["completed"] = {int(run_idx): record for run_idx, record in manifest.get("completed", {}).items()}
+    return manifest
+
+
+def _save_manifest(path, manifest):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(manifest, f)
+    os.replace(tmp_path, path)
+
+
 def run_experiment(config, corpus=None):
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
@@ -81,62 +121,92 @@ def run_experiment(config, corpus=None):
 
     results = {"SV": {}, "SC": {}}
     for train_strategy in STRATEGIES:
+        manifest_path = _manifest_path(config, train_strategy)
+        manifest = _load_manifest(manifest_path)
+
+        # One wandb run covers this whole strategy's config.num_runs repeats
+        # plus their aggregate -- reattached via the manifest's persisted
+        # run id if a previous invocation already started it (crash resume),
+        # matching Neururer et al. 2024 Section 2.3's "average over 5
+        # train/test runs and report mean and SD" (the aggregate is what's
+        # actually of interest, not each repeat in isolation).
+        run = tracking.start_run(
+            config.wandb,
+            name=_sweep_key(config, train_strategy),
+            tags=[config.model.type, config.data.dataset.lower(), train_strategy],
+            run_config=config.to_dict(),
+            run_id=manifest["wandb_run_id"],
+        )
+        if run is not None and manifest["wandb_run_id"] is None:
+            manifest["wandb_run_id"] = run.id
+            _save_manifest(manifest_path, manifest)
+
         # Raw [0, 1] fractions from every one of config.num_runs independent
         # train/test runs for this strategy, keyed by test_strategy, reduced
-        # to mean/SD below (Neururer et al. 2024 Section 2.3).
+        # to mean/SD below (Neururer et al. 2024 Section 2.3). Repeats already
+        # recorded in the manifest (a prior invocation completed them before
+        # a crash/requeue) contribute their persisted values here instead of
+        # being retrained, so the aggregate is identical to an uninterrupted run.
         raw_sv = {test_strategy: [] for test_strategy in STRATEGIES}
         raw_sc = {test_strategy: [] for test_strategy in STRATEGIES}
+        for completed_record in manifest["completed"].values():
+            for test_strategy in STRATEGIES:
+                raw_sv[test_strategy].append(completed_record["sv"][test_strategy])
+                raw_sc[test_strategy].append(completed_record["sc"][test_strategy])
 
         for run_idx in range(config.num_runs):
-            run = tracking.start_run(
-                config.wandb,
-                name=f"{config.model.type}-{train_strategy}-run{run_idx}",
-                tags=[config.model.type, train_strategy],
-                run_config=config.to_dict(),
-            )
+            if run_idx in manifest["completed"]:
+                continue
 
             dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
+            checkpoint_path = _checkpoint_path(config, train_strategy, run_idx)
             # dev_utterances=test_utterances + draw_strategy=train_strategy matches
             # context/src's periodic dev-set EER checkpointing (Neururer et al. 2024's
             # reported numbers come from the best such checkpoint, not the final epoch).
             train(
                 model, loss_module, dataset, config,
                 dev_utterances=test_utterances, segment_length=segment_length, draw_strategy=train_strategy,
-                run=run, device=config.device,
+                run=run, run_idx=run_idx, device=config.device,
+                checkpoint_path=checkpoint_path,
+                checkpoint_every_epochs=config.training.checkpoint_every_epochs,
+                early_stopping_patience=config.training.early_stopping_patience,
             )
 
             # summary reports this single run's numbers as percentages, matching
             # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
             summary = {}
+            record = {"sv": {}, "sc": {}}
             for test_strategy in STRATEGIES:
                 sv_embeddings, sv_labels = extract_embeddings(
                     model, test_utterances, segment_length, test_strategy, device=config.device
                 )
                 eer = equal_error_rate(sv_embeddings, sv_labels)
                 raw_sv[test_strategy].append(eer)
-                summary[f"final/SV_EER_test-{test_strategy}"] = eer * 100
+                record["sv"][test_strategy] = eer
+                summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
 
                 sc_embeddings, sc_labels = extract_embeddings(
                     model, sc_utterances, segment_length, test_strategy, device=config.device
                 )
                 mr = best_misclassification_rate(sc_embeddings, sc_labels)
                 raw_sc[test_strategy].append(mr)
-                summary[f"final/SC_MR_test-{test_strategy}"] = mr * 100
+                record["sc"][test_strategy] = mr
+                summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
 
             tracking.log_summary(run, summary)
-            tracking.finish(run)
 
-        # Once all of this strategy's runs are done, log the mean/SD over
-        # config.num_runs runs to their own wandb run (Neururer et al. 2024
-        # Section 2.3: "we average over 5 train/test runs and report mean and SD").
-        aggregate_run = tracking.start_run(
-            config.wandb,
-            name=f"{config.model.type}-{train_strategy}-aggregate",
-            tags=[config.model.type, train_strategy, "aggregate"],
-            run_config=config.to_dict(),
-        )
+            # Persisted before deleting the checkpoint: this run_idx is now
+            # durably done, so a crash from here on skips straight past it.
+            manifest["completed"][run_idx] = record
+            _save_manifest(manifest_path, manifest)
+            if checkpoint_path.exists():
+                checkpoint_path.unlink()
+
+        # Once all of this strategy's runs are accounted for (freshly run or
+        # already in the manifest), log the mean/SD over config.num_runs runs
+        # to this same run's summary (Neururer et al. 2024 Section 2.3).
         aggregate_summary = {}
         for test_strategy in STRATEGIES:
             sv_stats = _run_statistics(raw_sv[test_strategy])
@@ -147,8 +217,8 @@ def run_experiment(config, corpus=None):
             aggregate_summary[f"final/SV_EER_test-{test_strategy}_std"] = sv_stats.std * 100
             aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] = sc_stats.mean * 100
             aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] = sc_stats.std * 100
-        tracking.log_summary(aggregate_run, aggregate_summary)
-        tracking.finish(aggregate_run)
+        tracking.log_summary(run, aggregate_summary)
+        tracking.finish(run)
 
     return results
 

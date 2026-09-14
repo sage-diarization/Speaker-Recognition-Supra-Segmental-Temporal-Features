@@ -1,5 +1,7 @@
 import itertools
+import json
 import statistics
+from pathlib import Path
 
 import pytest
 
@@ -208,10 +210,13 @@ def _is_aggregate_summary(summary):
 
 
 def test_run_experiment_logs_wandb_summary_on_a_0_100_scale(monkeypatch):
-    # tracking.log_summary receives both each individual run's EER/MR and,
-    # once a strategy's runs all finish, its aggregate mean/SD -- all on the
-    # same 0-100 scale as format_results/the paper's tables, even though
-    # `results` itself keeps the raw [0, 1] fractions/RunStatistics.
+    # tracking.log_summary receives both each individual run's EER/MR
+    # (namespaced by run_idx, since config.num_runs repeats now share a
+    # single wandb run) and, once a strategy's runs all finish, its aggregate
+    # mean/SD -- all on the same 0-100 scale as format_results/the paper's
+    # tables, even though `results` itself keeps the raw [0, 1]
+    # fractions/RunStatistics. num_runs=1 here so each per-run summary's
+    # single raw value is directly comparable to the (trivial) aggregate mean.
     captured_summaries = []
     monkeypatch.setattr(
         experiment_module.tracking, "log_summary", lambda run, metrics: captured_summaries.append(metrics)
@@ -236,8 +241,8 @@ def test_run_experiment_logs_wandb_summary_on_a_0_100_scale(monkeypatch):
         for test_strategy in STRATEGIES:
             eer_fraction = results["SV"][(train_strategy, test_strategy)].mean
             mr_fraction = results["SC"][(train_strategy, test_strategy)].mean
-            assert summary[f"final/SV_EER_test-{test_strategy}"] == pytest.approx(eer_fraction * 100)
-            assert summary[f"final/SC_MR_test-{test_strategy}"] == pytest.approx(mr_fraction * 100)
+            assert summary[f"run0/final/SV_EER_test-{test_strategy}"] == pytest.approx(eer_fraction * 100)
+            assert summary[f"run0/final/SC_MR_test-{test_strategy}"] == pytest.approx(mr_fraction * 100)
 
     for summary, train_strategy in zip(aggregate_summaries, STRATEGIES):
         for test_strategy in STRATEGIES:
@@ -303,3 +308,104 @@ def test_run_experiment_aggregates_mean_and_std_over_num_runs(monkeypatch):
             assert aggregate_summary[f"final/SV_EER_test-{test_strategy}_std"] == pytest.approx(expected.std * 100)
             assert aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] == pytest.approx(expected.mean * 100)
             assert aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] == pytest.approx(expected.std * 100)
+
+
+def test_run_experiment_resumes_across_a_crash_without_retraining_completed_runs(monkeypatch, tmp_path):
+    # Stubbed with deterministic, strictly increasing sequences (as in
+    # test_run_experiment_aggregates_mean_and_std_over_num_runs above) so the
+    # exact call order -- and therefore whether any run got redone -- is
+    # verifiable regardless of real model training's inherent randomness.
+    eer_counter = itertools.count()
+    monkeypatch.setattr(experiment_module, "equal_error_rate", lambda *a, **k: next(eer_counter) / 100.0)
+    mr_counter = itertools.count()
+    monkeypatch.setattr(experiment_module, "best_misclassification_rate", lambda *a, **k: next(mr_counter) / 100.0)
+
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.num_runs = 3
+    config.training.checkpoint_dir = str(tmp_path / "checkpoints")
+
+    corpus = _tiny_stub_corpus()
+    real_train = experiment_module.train
+
+    # Simulate a crash partway through the very first strategy's sweep: let
+    # run_idx 0 finish normally, then blow up before run_idx 1 trains at all
+    # (matching a real crash, which leaves no checkpoint for the run that was
+    # never even started).
+    call_count = itertools.count()
+
+    def _crash_on_second_call(*args, **kwargs):
+        if next(call_count) == 1:
+            raise RuntimeError("simulated crash")
+        return real_train(*args, **kwargs)
+
+    monkeypatch.setattr(experiment_module, "train", _crash_on_second_call)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_experiment(config, corpus=corpus)
+
+    # "Resume": a fresh invocation with the same config (same checkpoint_dir)
+    # must not retrain OS's run_idx 0 -- but SS/SU haven't started at all yet
+    # (the crash happened during OS's sweep), so they still train all 3.
+    train_calls = []
+
+    def _spy_train(model, loss_module, dataset, cfg, **kwargs):
+        train_calls.append((kwargs.get("draw_strategy"), kwargs.get("run_idx")))
+        return real_train(model, loss_module, dataset, cfg, **kwargs)
+
+    monkeypatch.setattr(experiment_module, "train", _spy_train)
+    results = run_experiment(config, corpus=corpus)
+
+    assert ("OS", 0) not in train_calls
+    assert sorted(strategy_run for strategy_run in train_calls if strategy_run[0] == "OS") == [("OS", 1), ("OS", 2)]
+    for strategy in ("SS", "SU"):
+        assert sorted(run_idx for s, run_idx in train_calls if s == strategy) == [0, 1, 2]
+
+    manifest_path = Path(config.training.checkpoint_dir) / "CNN-timit-OS" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert sorted(manifest["completed"].keys()) == ["0", "1", "2"]
+
+    # Completed repeats' checkpoints are cleaned up, not left to accumulate.
+    remaining_checkpoints = list(Path(config.training.checkpoint_dir).rglob("*.pt"))
+    assert remaining_checkpoints == []
+
+    for task in ("SV", "SC"):
+        for test_strategy in STRATEGIES:
+            stats = results[task][("OS", test_strategy)]
+            assert 0.0 <= stats.mean <= 1.0
+
+
+def test_run_experiment_reuses_the_same_wandb_run_id_across_invocations(monkeypatch, tmp_path):
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.num_runs = 1
+    config.training.checkpoint_dir = str(tmp_path / "checkpoints")
+    config.wandb.enabled = True
+    config.wandb.mode = "disabled"  # exercises the real wandb.init/finish path without network
+
+    corpus = _tiny_stub_corpus()
+    run_experiment(config, corpus=corpus)
+
+    manifest_path = Path(config.training.checkpoint_dir) / "CNN-timit-OS" / "manifest.json"
+    first_run_id = json.loads(manifest_path.read_text())["wandb_run_id"]
+    assert first_run_id is not None
+
+    captured_run_ids = []
+    real_start_run = experiment_module.tracking.start_run
+
+    def _spy_start_run(*args, **kwargs):
+        captured_run_ids.append(kwargs.get("run_id"))
+        return real_start_run(*args, **kwargs)
+
+    monkeypatch.setattr(experiment_module.tracking, "start_run", _spy_start_run)
+
+    # All 3 strategies' runs are already complete, so this invocation should
+    # skip straight to reattaching + re-logging the aggregate for each.
+    run_experiment(config, corpus=corpus)
+
+    assert captured_run_ids[0] == first_run_id
