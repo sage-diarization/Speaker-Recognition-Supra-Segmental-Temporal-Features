@@ -1,4 +1,5 @@
 import argparse
+import functools
 import json
 import os
 import statistics
@@ -6,14 +7,17 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+import soundfile as sf
 
 from . import tracking
 from .config import ExperimentConfig
 from .data.dataset import SegmentDataset, featurize_waveform
+from .data.lazy_features import LazyFeatures, expected_frame_count
 from .data.timit import TimitCorpus
+from .data.voxceleb import VoxCelebCorpus
 from .device import resolve_device
 from .evaluation.clustering import best_misclassification_rate
-from .evaluation.verification import equal_error_rate
+from .evaluation.verification import equal_error_rate, trial_list_equal_error_rate
 from .models.losses import build_loss
 from .models.registry import build_model
 from .training.trainer import extract_embeddings, train
@@ -69,6 +73,42 @@ def build_sc_utterances(corpus, split, transformation, num_speakers):
     return utterances
 
 
+def _load_and_featurize(load_waveform_fn, path, transformation):
+    waveform, _ = load_waveform_fn(path)
+    return featurize_waveform(waveform, transformation)
+
+
+def _lazy_featurize_split(corpus, split, transformation):
+    """Like _featurize_split, but each utterance is a LazyFeatures instance
+    (featurized on first access, not upfront) -- see src/data/voxceleb.py's
+    module docstring for why VoxCeleb's ~148k training utterances can't be
+    eagerly loaded into memory the way TIMIT's ~5.5k can."""
+    speakers = corpus.speakers(split)
+    label_map = {speaker: i for i, speaker in enumerate(speakers)}
+    utterances = []
+    for speaker in speakers:
+        for path in corpus.utterance_paths(split, speaker):
+            length = expected_frame_count(sf.info(str(path)).frames, transformation)
+            compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation)
+            utterances.append((LazyFeatures(compute_fn, length), label_map[speaker]))
+    return utterances, label_map
+
+
+def _lazy_trial_utterances(corpus, transformation):
+    """One lazy utterance entry per unique path referenced in the corpus's
+    verification trial pairs, labeled by that relative path (not a speaker
+    id) so trial_list_equal_error_rate can look embeddings back up by
+    utterance id after extract_embeddings runs."""
+    relative_paths = sorted({path for _, path1, path2 in corpus.trial_pairs for path in (path1, path2)})
+    utterances = []
+    for relative_path in relative_paths:
+        full_path = corpus.trial_utterance_path(relative_path)
+        length = expected_frame_count(sf.info(str(full_path)).frames, transformation)
+        compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, full_path, transformation)
+        utterances.append((LazyFeatures(compute_fn, length), relative_path))
+    return utterances
+
+
 def _sweep_key(config, train_strategy):
     return f"{config.model.type}-{config.data.dataset.lower()}-{train_strategy}"
 
@@ -110,16 +150,45 @@ def run_experiment(config, corpus=None):
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
 
-    corpus = corpus or TimitCorpus(config.data)
+    is_voxceleb = config.data.dataset.lower() == "voxceleb"
     transformation = config.transformation
     segment_length = config.data.segment_length(transformation)
 
-    train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation)
-    test_utterances, _ = _featurize_split(corpus, "TEST", transformation)
+    if is_voxceleb:
+        # Neururer et al. 2024 explicitly omits the SC task for VoxCeleb
+        # ("we omit SC results on VoxCeleb as experiments in Section 2 led
+        # to similar conclusions") -- sc_utterances stays None throughout.
+        # SV evaluation is over a fixed trial-pairs list (the standard
+        # VoxCeleb protocol), not the exhaustive all-vs-all pairing TIMIT's
+        # SV task uses, hence the different eval function below.
+        corpus = corpus or VoxCelebCorpus(config)
+        train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation)
+        sv_eval_utterances = _lazy_trial_utterances(corpus, transformation)
+        sc_utterances = None
 
-    sc_utterances = build_sc_utterances(corpus, "TEST", transformation, config.evaluation.sc_num_speakers)
+        def sv_eval_fn(embeddings, utterance_ids):
+            return trial_list_equal_error_rate(embeddings, utterance_ids, corpus.trial_pairs)
 
-    results = {"SV": {}, "SC": {}}
+        # train()'s periodic dev-eval must also use the trial-list function --
+        # plain equal_error_rate would be nonsensical here (utterance_ids are
+        # unique per-utterance path strings, not speaker ids, so every pair
+        # would count as "different speaker").
+        dev_eval_fn = sv_eval_fn
+    else:
+        corpus = corpus or TimitCorpus(config.data)
+        train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation)
+        sv_eval_utterances, _ = _featurize_split(corpus, "TEST", transformation)
+        sc_utterances = build_sc_utterances(corpus, "TEST", transformation, config.evaluation.sc_num_speakers)
+        sv_eval_fn = equal_error_rate
+        # train()'s own default (trainer.py's equal_error_rate) is exactly
+        # this same function -- no need to route dev-eval through this
+        # module's reference for TIMIT.
+        dev_eval_fn = None
+
+    results = {"SV": {}}
+    if sc_utterances is not None:
+        results["SC"] = {}
+
     for train_strategy in STRATEGIES:
         manifest_path = _manifest_path(config, train_strategy)
         manifest = _load_manifest(manifest_path)
@@ -148,11 +217,12 @@ def run_experiment(config, corpus=None):
         # a crash/requeue) contribute their persisted values here instead of
         # being retrained, so the aggregate is identical to an uninterrupted run.
         raw_sv = {test_strategy: [] for test_strategy in STRATEGIES}
-        raw_sc = {test_strategy: [] for test_strategy in STRATEGIES}
+        raw_sc = {test_strategy: [] for test_strategy in STRATEGIES} if sc_utterances is not None else None
         for completed_record in manifest["completed"].values():
             for test_strategy in STRATEGIES:
                 raw_sv[test_strategy].append(completed_record["sv"][test_strategy])
-                raw_sc[test_strategy].append(completed_record["sc"][test_strategy])
+                if raw_sc is not None:
+                    raw_sc[test_strategy].append(completed_record["sc"][test_strategy])
 
         for run_idx in range(config.num_runs):
             if run_idx in manifest["completed"]:
@@ -162,38 +232,40 @@ def run_experiment(config, corpus=None):
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
             checkpoint_path = _checkpoint_path(config, train_strategy, run_idx)
-            # dev_utterances=test_utterances + draw_strategy=train_strategy matches
+            # dev_utterances=sv_eval_utterances + draw_strategy=train_strategy matches
             # context/src's periodic dev-set EER checkpointing (Neururer et al. 2024's
             # reported numbers come from the best such checkpoint, not the final epoch).
             train(
                 model, loss_module, dataset, config,
-                dev_utterances=test_utterances, segment_length=segment_length, draw_strategy=train_strategy,
+                dev_utterances=sv_eval_utterances, segment_length=segment_length, draw_strategy=train_strategy,
                 run=run, run_idx=run_idx, device=config.device,
                 checkpoint_path=checkpoint_path,
                 checkpoint_every_epochs=config.training.checkpoint_every_epochs,
                 early_stopping_patience=config.training.early_stopping_patience,
+                dev_eval_fn=dev_eval_fn,
             )
 
             # summary reports this single run's numbers as percentages, matching
             # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
             summary = {}
-            record = {"sv": {}, "sc": {}}
+            record = {"sv": {}, "sc": {}} if sc_utterances is not None else {"sv": {}}
             for test_strategy in STRATEGIES:
                 sv_embeddings, sv_labels = extract_embeddings(
-                    model, test_utterances, segment_length, test_strategy, device=config.device
+                    model, sv_eval_utterances, segment_length, test_strategy, device=config.device
                 )
-                eer = equal_error_rate(sv_embeddings, sv_labels)
+                eer = sv_eval_fn(sv_embeddings, sv_labels)
                 raw_sv[test_strategy].append(eer)
                 record["sv"][test_strategy] = eer
                 summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
 
-                sc_embeddings, sc_labels = extract_embeddings(
-                    model, sc_utterances, segment_length, test_strategy, device=config.device
-                )
-                mr = best_misclassification_rate(sc_embeddings, sc_labels)
-                raw_sc[test_strategy].append(mr)
-                record["sc"][test_strategy] = mr
-                summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
+                if sc_utterances is not None:
+                    sc_embeddings, sc_labels = extract_embeddings(
+                        model, sc_utterances, segment_length, test_strategy, device=config.device
+                    )
+                    mr = best_misclassification_rate(sc_embeddings, sc_labels)
+                    raw_sc[test_strategy].append(mr)
+                    record["sc"][test_strategy] = mr
+                    summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
 
             tracking.log_summary(run, summary)
 
@@ -210,13 +282,15 @@ def run_experiment(config, corpus=None):
         aggregate_summary = {}
         for test_strategy in STRATEGIES:
             sv_stats = _run_statistics(raw_sv[test_strategy])
-            sc_stats = _run_statistics(raw_sc[test_strategy])
             results["SV"][(train_strategy, test_strategy)] = sv_stats
-            results["SC"][(train_strategy, test_strategy)] = sc_stats
             aggregate_summary[f"final/SV_EER_test-{test_strategy}_mean"] = sv_stats.mean * 100
             aggregate_summary[f"final/SV_EER_test-{test_strategy}_std"] = sv_stats.std * 100
-            aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] = sc_stats.mean * 100
-            aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] = sc_stats.std * 100
+
+            if raw_sc is not None:
+                sc_stats = _run_statistics(raw_sc[test_strategy])
+                results["SC"][(train_strategy, test_strategy)] = sc_stats
+                aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] = sc_stats.mean * 100
+                aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] = sc_stats.std * 100
         tracking.log_summary(run, aggregate_summary)
         tracking.finish(run)
 
@@ -226,9 +300,13 @@ def run_experiment(config, corpus=None):
 def format_results(results):
     """Reports EER/MR as `mean% σstd%` (mean and SD over config.num_runs
     runs, as percentages), matching Tables 1/2 in Neururer et al. 2024;
-    `results` itself stores RunStatistics of raw [0, 1] fractions."""
+    `results` itself stores RunStatistics of raw [0, 1] fractions. "SC" is
+    absent for VoxCeleb runs (Neururer et al. 2024 omits the SC task there),
+    so only tasks actually present in `results` are reported."""
     lines = []
     for task in ("SV", "SC"):
+        if task not in results:
+            continue
         lines.append(f"{task} ({'EER' if task == 'SV' else 'MR'}) [%]:")
         lines.append("train\\test  " + "  ".join(f"{s:>14}" for s in STRATEGIES))
         for train_strategy in STRATEGIES:

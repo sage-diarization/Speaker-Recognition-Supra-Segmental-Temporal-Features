@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .. import tracking
+from ..data.lazy_features import resolve_features
 from ..evaluation.verification import equal_error_rate
 
 
@@ -60,7 +61,8 @@ def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, be
 
 def train(model, loss_module, dataset, config, dev_utterances=None, segment_length=None,
           draw_strategy=None, run=None, device="cpu", run_idx=None,
-          checkpoint_path=None, checkpoint_every_epochs=None, early_stopping_patience=None):
+          checkpoint_path=None, checkpoint_every_epochs=None, early_stopping_patience=None,
+          dev_eval_fn=None):
     """Trains for up to config.training.num_epochs. When dev_utterances is
     given, evaluates dev-set SV EER after every epoch, stops once dev EER
     hasn't improved for early_stopping_patience epochs, and keeps the
@@ -68,6 +70,12 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     matches context/src's EvalCallback + get_reference_data, which is what
     Neururer et al. 2024's Tables 1/2 numbers are actually computed from (the
     best dev checkpoint, not whatever state training happens to end in).
+
+    dev_eval_fn(embeddings, labels) -> eer defaults to equal_error_rate's
+    exhaustive all-pairs comparison (TIMIT's SV protocol); pass a different
+    function (e.g. a closure over trial_list_equal_error_rate) for a dataset
+    whose SV evaluation is instead defined over a fixed trial-pairs list
+    (VoxCeleb -- see src/experiment.py).
 
     If checkpoint_path is given, a checkpoint is written every
     checkpoint_every_epochs epochs (and always on the epoch that triggers
@@ -92,6 +100,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     best_metric, best_epoch, best_state = None, -1, None
     dev_eval_rng = np.random.default_rng()
     metric_prefix = f"run{run_idx}/" if run_idx is not None else ""
+    dev_eval_fn = dev_eval_fn or equal_error_rate
 
     checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
     if checkpoint_path is not None and checkpoint_path.exists():
@@ -134,7 +143,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 dev_embeddings, dev_labels = extract_embeddings(
                     model, dev_utterances, segment_length, draw_strategy, device=device, rng=dev_eval_rng
                 )
-                dev_eer = equal_error_rate(dev_embeddings, dev_labels)
+                dev_eer = dev_eval_fn(dev_embeddings, dev_labels)
                 tracking.log(run, {f"{metric_prefix}dev/EER": dev_eer})
                 if best_metric is None or dev_eer < best_metric:
                     best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
@@ -218,7 +227,8 @@ def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=No
     model.eval()
     embeddings, labels = [], []
     with torch.no_grad():
-        for features, label in utterances:
+        for features_or_loader, label in utterances:
+            features = resolve_features(features_or_loader)
             length = features.shape[0]
             if length <= segment_length:
                 continue

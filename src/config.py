@@ -53,6 +53,25 @@ class DataConfig:
 
 
 @dataclass
+class VoxCelebConfig:
+    """torchaudio.datasets.VoxCeleb1Verification-backed corpus (see
+    src/data/voxceleb.py). Substitutes for Neururer et al. 2024's actual
+    VoxCeleb2-train/VoxCeleb1-test protocol, since torchaudio ships no
+    VoxCeleb2 downloader: training utterances instead come from VoxCeleb1's
+    own speakers, excluding whichever speakers appear in the verification
+    trial list so train/eval speakers stay disjoint (the standard open-set
+    setup) -- see src/data/voxceleb.py's module docstring for why that
+    constrains trial_meta_url to the *original* 40-speaker list rather than
+    the "hard"/"extended" VoxSRC lists."""
+
+    root: str = "~/.cache/sst-experiment/voxceleb"
+    # The verification trial-pairs list to download+evaluate against
+    # (default: the cleaned original 40-held-out-speaker list). Passed
+    # straight through to VoxCeleb1Verification's meta_url.
+    trial_meta_url: str = "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+
+
+@dataclass
 class ModelConfig:
     type: str = "CNN"
     allow_full: bool = False
@@ -160,6 +179,7 @@ class WandbConfig:
 class ExperimentConfig:
     transformation: TransformationConfig = field(default_factory=TransformationConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    voxceleb: VoxCelebConfig = field(default_factory=VoxCelebConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     conformer: ConformerConfig = field(default_factory=ConformerConfig)
     rnn: RNNConfig = field(default_factory=RNNConfig)
@@ -188,6 +208,7 @@ class ExperimentConfig:
         for section_name, section_cls in (
             ("transformation", TransformationConfig),
             ("data", DataConfig),
+            ("voxceleb", VoxCelebConfig),
             ("model", ModelConfig),
             ("conformer", ConformerConfig),
             ("rnn", RNNConfig),

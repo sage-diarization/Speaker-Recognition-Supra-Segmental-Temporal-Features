@@ -1,0 +1,52 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
+
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 1.0
+
+voxceleb:
+  root: "~/.cache/sst-experiment/voxceleb"   # fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  # trial_meta_url must stay the *original* 40-held-out-speaker list -- see
+  # src/data/voxceleb.py's module docstring for why the "hard"/"extended"
+  # VoxSRC lists don't work with this project's VoxCeleb1-only substitute
+  # protocol (train/eval speaker overlap).
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+
+model:
+  type: "ResNet"
+
+# ResNet34s's original front-end (context/src/00_configs/01_transformation/ResNet.json):
+# a raw (non-mel) magnitude spectrogram with a hamming window -- different
+# from CNN/RNN's mel front-end, per Neururer et al. 2024's stated policy of
+# keeping each model's own original recipe for comparability with prior work.
+transformation:
+  type: "linear"
+  window: "hamming"
+  nfft: 512
+  frame_length_s: 0.025
+  frame_step_s: 0.01
+
+resnet:
+  vlad_clusters: 10
+  ghost_clusters: 2
+  bottleneck: 512
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+optimizer:
+  learning_rate: 0.0001
+  weight_decay: 0.0001    # context/src/00_configs/05_model/RES34S.json's WEIGHT_DECAY
+
+training:
+  num_epochs: 128
+  batch_size: 100
+  checkpoint_every_epochs: 1   # VoxCeleb epochs are expensive (see README) -- checkpoint every one
+
+wandb:
+  enabled: false          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: ""              # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

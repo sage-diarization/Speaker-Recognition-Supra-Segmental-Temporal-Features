@@ -45,11 +45,15 @@ paper, not unified across models).
 Trains a speaker embedding model for each of the three training-time
 segment-draw strategies (OS/SS/SU), repeated `num_runs` times per strategy
 (default 5, see `configs/cnn_timit.yaml`), and evaluates each run against all
-three test-time strategies. Reports speaker verification EER and speaker
-clustering MR as mean/SD over those runs in a 3x3 grid (reproducing the
-structure and mean/SD reporting of the paper's Tables 1/2, not the exact
-numbers — the original list-file splits for dev/final partitions aren't
-recoverable from the reference repo).
+three test-time strategies. On TIMIT (`data.dataset: "TIMIT"`, the default),
+reports speaker verification EER and speaker clustering MR as mean/SD over
+those runs in a 3x3 grid (reproducing the structure and mean/SD reporting of
+the paper's Tables 1/2, not the exact numbers — the original list-file
+splits for dev/final partitions aren't recoverable from the reference repo).
+On VoxCeleb (`data.dataset: "VoxCeleb"`, see "Running on VoxCeleb" below),
+only SV/EER is reported, matching the paper's Table 3 and its stated reason
+for omitting SC there ("experiments in Section 2 led to similar
+conclusions" for both tasks).
 
 Each run evaluates dev-set SV EER after *every* epoch and keeps the
 best-scoring checkpoint's weights, matching `context/src`'s `EvalCallback` +
@@ -93,14 +97,65 @@ Point the pipeline at your own licensed copy via `configs/cnn_timit.yaml`
 - `data.download_url` / `TIMIT_DOWNLOAD_URL`: a URL to a copy you control
   (e.g. your own S3/blob storage) — downloaded and cached on first use.
 
+## Running on VoxCeleb
+
+Set `data.dataset: "VoxCeleb"` (see `configs/cnn_voxceleb.yaml`) to run
+against VoxCeleb instead of TIMIT. `src/data/voxceleb.py`'s `VoxCelebCorpus`
+fetches and caches the corpus automatically via torchaudio's own downloader
+(`torchaudio.datasets.VoxCeleb1Verification`, `voxceleb.root`) — no manual
+download/credential step needed, unlike TIMIT.
+
+**This is a deliberate deviation from Neururer et al. 2024's actual
+protocol**, worth understanding before comparing numbers to the paper: the
+paper trains on VoxCeleb2 (5,994 speakers) and evaluates on VoxCeleb1's
+"hard" test set (Section 3.2). torchaudio ships no VoxCeleb2 downloader, so
+this project instead trains on VoxCeleb1's *own* speakers, excluding
+whichever 40 speakers appear in the verification trial list so train/eval
+speakers stay disjoint (the standard open-set setup) — i.e. a
+VoxCeleb1-train/VoxCeleb1-test substitute for the paper's
+VoxCeleb2-train/VoxCeleb1-test protocol. This is also why
+`voxceleb.trial_meta_url` must stay the *original* `veri_test2.txt` list (40
+held-out speakers) rather than the "hard"/"extended" VoxSRC lists
+(`list_test_hard2.txt` / `list_test_all2.txt`): fetched and inspected
+directly while building this, those span 1,190 of VoxCeleb1's 1,251
+speakers, so excluding their speakers from training would leave almost
+nothing to train on, and *not* excluding them would leak most training
+speakers into evaluation. See `src/data/voxceleb.py`'s module docstring for
+the full detail.
+
+Two further consequences of VoxCeleb's scale and structure vs. TIMIT's,
+both handled automatically but worth knowing about:
+
+- **Lazy featurization.** VoxCeleb1 has ~148k training utterances (vs.
+  TIMIT's ~5,500); eagerly featurizing all of them upfront (as TIMIT's path
+  does) would need tens of GB of RAM. `src/data/lazy_features.py`'s
+  `LazyFeatures` instead defers each utterance's featurization to first
+  access (during training/eval), using just its raw sample count (a cheap
+  file-header probe, not a full decode) to filter out utterances shorter
+  than a training segment upfront.
+- **No cap on hop-window count for evaluation.** VoxCeleb utterances vary
+  from a few seconds to several minutes (unlike TIMIT's uniform ~3s
+  sentences); `extract_embeddings`' hop-window averaging (see "Tracking
+  progress with wandb" below and its own docstring) generates one window per
+  ~0.5s of audio with no upper bound, matching `context/src/setup/setup.py`'s
+  equally uncapped original behavior. A handful of very long utterances in
+  the trial list could therefore make a single embedding-extraction call
+  noticeably more expensive than the rest. `evaluation.sv_max_sentences`
+  exists as an unused config hook if this proves impractical in practice and
+  a cap is wanted.
+
 ## Running the experiment
 
 ```
 pip install -r requirements.txt
-python -m src.experiment --config configs/cnn_timit.yaml         # CNN backend
-python -m src.experiment --config configs/rnn_timit.yaml         # RNN backend
-python -m src.experiment --config configs/resnet_timit.yaml      # ResNet backend
-python -m src.experiment --config configs/conformer_timit.yaml   # Conformer backend
+python -m src.experiment --config configs/cnn_timit.yaml         # CNN backend on TIMIT
+python -m src.experiment --config configs/rnn_timit.yaml         # RNN backend on TIMIT
+python -m src.experiment --config configs/resnet_timit.yaml      # ResNet backend on TIMIT
+python -m src.experiment --config configs/conformer_timit.yaml   # Conformer backend on TIMIT
+python -m src.experiment --config configs/cnn_voxceleb.yaml      # CNN backend on VoxCeleb
+python -m src.experiment --config configs/rnn_voxceleb.yaml      # RNN backend on VoxCeleb
+python -m src.experiment --config configs/resnet_voxceleb.yaml   # ResNet backend on VoxCeleb
+python -m src.experiment --config configs/conformer_voxceleb.yaml   # Conformer backend on VoxCeleb
 ```
 
 `device: "auto"` (the default, see `configs/cnn_timit.yaml`) picks the best
@@ -112,9 +167,10 @@ CPU-only machine. Set it explicitly (e.g. `device: "cpu"`) to override.
 
 Set `wandb.enabled: true` in the config to track runs (see
 `configs/cnn_timit.yaml`). One wandb run covers each (model, dataset,
-training-strategy) combination -- named e.g. `CNN-timit-OS` and tagged
-`[model.type, dataset, strategy]` so runs from different models/datasets are
-distinguishable at a glance -- and stays open across all of that strategy's
+training-strategy) combination -- named e.g. `CNN-timit-OS` (or
+`CNN-voxceleb-OS` for a VoxCeleb run) and tagged `[model.type, dataset,
+strategy]` so runs from different models/datasets are distinguishable at a
+glance -- and stays open across all of that strategy's
 `num_runs` repeats, since the individual repeats aren't independently
 interesting on their own (only their aggregate is). Each repeat's per-epoch
 `train/loss`/`dev/EER` curves are logged under a `run{idx}/` -prefixed key so

@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --time=720
+#SBATCH --job-name=sst-experiment_resnet_voxceleb
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --output=logs/%j_%N__ex02.out
+#SBATCH --error=logs/%j_%N__ex02.out
+
+# VoxCeleb's ~148k training utterances make each epoch far more expensive
+# than TIMIT's -- --time above is a starting guess, adjust to your
+# partition's actual limit. Training is safely resumable (see
+# src/README.md's checkpoint/resume section): if this job times out or
+# crashes before the full config.num_runs x 3 strategies finish, just
+# re-submit this same script -- it picks up exactly where it left off
+# instead of restarting.
+
+source slurm/install.submit
+source slurm/secrets.submit
+
+echo "Start experiment..."
+wandb login $WANDB_API_KEY
+python3 -u -m src.experiment --config configs/resnet_voxceleb-hpc.yaml
+
+echo "Done."

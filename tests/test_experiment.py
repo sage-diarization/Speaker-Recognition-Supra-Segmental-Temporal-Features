@@ -4,6 +4,7 @@ import statistics
 from pathlib import Path
 
 import pytest
+import soundfile as sf
 
 from src import experiment as experiment_module
 from src.config import ExperimentConfig
@@ -29,6 +30,69 @@ class _StubCorpus:
     def load_waveform(self, path):
         split, speaker_id, i = path
         return self._waveforms_by_split[split][speaker_id][i], 16000
+
+
+def _make_voxceleb_stub_corpus(tmp_path, num_speakers=3, utterances_per_speaker=3, duration_s=2.0):
+    """Minimal VoxCelebCorpus-shaped stub (speakers/utterance_paths/
+    load_waveform/trial_pairs/trial_utterance_path) so run_experiment's
+    VoxCeleb path can be exercised end-to-end without a real download.
+    Backed by real (temporary) wav files on disk, since the lazy
+    featurization path (src/experiment.py::_lazy_featurize_split/
+    _lazy_trial_utterances) probes each file's length via soundfile.info
+    before featurizing it."""
+    root = tmp_path / "voxceleb_stub"
+
+    train_paths_by_speaker = {}
+    for speaker in range(num_speakers):
+        speaker_id = f"id{speaker:05d}"
+        paths = []
+        for i in range(utterances_per_speaker):
+            path = root / speaker_id / f"clip{i}" / "00001.wav"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            waveform = make_synthetic_waveform(200 + 150 * speaker, duration_s, 16000, seed=speaker * 100 + i)
+            sf.write(str(path), waveform, 16000)
+            paths.append(path)
+        train_paths_by_speaker[speaker_id] = paths
+
+    # A separate pool of "held out" utterances for the trial list -- disjoint
+    # from train_paths_by_speaker's speakers, matching how the real
+    # VoxCelebCorpus excludes trial speakers from training.
+    trial_paths = {}
+    for speaker_idx, speaker_id in enumerate(("idEVAL0", "idEVAL1")):
+        for clip in range(2):
+            relative_path = f"{speaker_id}/clip{clip}/00001.wav"
+            path = root / "trial" / speaker_id / f"clip{clip}" / "00001.wav"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            waveform = make_synthetic_waveform(500 + 150 * speaker_idx, duration_s, 16000, seed=900 + speaker_idx * 10 + clip)
+            sf.write(str(path), waveform, 16000)
+            trial_paths[relative_path] = path
+
+    trial_pairs = [
+        (1, "idEVAL0/clip0/00001.wav", "idEVAL0/clip1/00001.wav"),
+        (0, "idEVAL0/clip0/00001.wav", "idEVAL1/clip0/00001.wav"),
+    ]
+
+    class _VoxCelebStubCorpus:
+        def __init__(self):
+            self.trial_pairs = trial_pairs
+
+        def speakers(self, split):
+            assert split == "TRAIN"
+            return sorted(train_paths_by_speaker.keys())
+
+        def utterance_paths(self, split, speaker_id):
+            assert split == "TRAIN"
+            return train_paths_by_speaker[speaker_id]
+
+        def trial_utterance_path(self, relative_path):
+            return trial_paths[relative_path]
+
+        @staticmethod
+        def load_waveform(path):
+            waveform, sample_rate = sf.read(str(path), dtype="float32")
+            return waveform, sample_rate
+
+    return _VoxCelebStubCorpus()
 
 
 def test_build_sc_utterances_splits_short_and_long_per_speaker():
@@ -409,3 +473,57 @@ def test_run_experiment_reuses_the_same_wandb_run_id_across_invocations(monkeypa
     run_experiment(config, corpus=corpus)
 
     assert captured_run_ids[0] == first_run_id
+
+
+def test_run_experiment_voxceleb_end_to_end_skips_sc_and_uses_trial_list_eval(tmp_path):
+    # Neururer et al. 2024 omits SC for VoxCeleb, and VoxCeleb's SV
+    # evaluation is trial-pairs-based rather than TIMIT's exhaustive
+    # all-vs-all pairing -- both should show up structurally in the result
+    # of a run through run_experiment's VoxCeleb dispatch (src/experiment.py).
+    config = ExperimentConfig()
+    config.data.dataset = "VoxCeleb"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+
+    corpus = _make_voxceleb_stub_corpus(tmp_path)
+    results = run_experiment(config, corpus=corpus)
+
+    assert set(results.keys()) == {"SV"}
+    for train_strategy in STRATEGIES:
+        for test_strategy in STRATEGIES:
+            stats = results["SV"][(train_strategy, test_strategy)]
+            assert isinstance(stats, RunStatistics)
+            assert 0.0 <= stats.mean <= 1.0
+
+    report = format_results(results)
+    assert "SV (EER)" in report
+    assert "SC (MR)" not in report
+
+
+def test_run_experiment_voxceleb_wandb_tags_and_name_identify_the_dataset(monkeypatch, tmp_path):
+    captured = []
+    real_start_run = experiment_module.tracking.start_run
+
+    def _spy_start_run(wandb_config, name, tags, run_config, run_id=None):
+        captured.append((name, tags))
+        return real_start_run(wandb_config, name, tags, run_config, run_id=run_id)
+
+    monkeypatch.setattr(experiment_module.tracking, "start_run", _spy_start_run)
+
+    config = ExperimentConfig()
+    config.data.dataset = "VoxCeleb"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+    config.training.checkpoint_dir = str(tmp_path / "checkpoints")
+
+    corpus = _make_voxceleb_stub_corpus(tmp_path)
+    run_experiment(config, corpus=corpus)
+
+    names = [name for name, _ in captured]
+    assert names == ["CNN-voxceleb-OS", "CNN-voxceleb-SS", "CNN-voxceleb-SU"]
+    for _, tags in captured:
+        assert "voxceleb" in tags

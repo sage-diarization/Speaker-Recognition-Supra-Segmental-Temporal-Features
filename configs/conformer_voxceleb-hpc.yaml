@@ -1,0 +1,44 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
+
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 1.0
+
+voxceleb:
+  root: "/scratch/voxceleb"   # fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  # trial_meta_url must stay the *original* 40-held-out-speaker list -- see
+  # src/data/voxceleb.py's module docstring for why the "hard"/"extended"
+  # VoxSRC lists don't work with this project's VoxCeleb1-only substitute
+  # protocol (train/eval speaker overlap).
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+
+model:
+  type: "Conformer"
+
+conformer:
+  encoder_dim: 144        # Gulati et al. 2020 Conformer(S) dimension
+  num_layers: 4            # paper uses 16 for LibriSpeech ASR; scaled down for this project's segment lengths
+  num_heads: 4
+  ff_expansion_factor: 4
+  conv_kernel_size: 31     # must be odd; paper's Table 1 rounds this to 32
+  dropout: 0.1
+  use_relative_positional_encoding: true
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  num_epochs: 128
+  batch_size: 100
+  checkpoint_dir: "/scratch/checkpoints"  # persists across SLURM job requeues/restarts, unlike a job-local dir
+  checkpoint_every_epochs: 1   # VoxCeleb epochs are expensive (see README) -- checkpoint every one
+  # early_stopping_patience (default 15) is left at its default here --
+  # override if needed.
+
+wandb:
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []
