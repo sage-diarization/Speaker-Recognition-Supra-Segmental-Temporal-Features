@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=240
+#SBATCH --time=360
 #SBATCH --job-name=sst-experiment-conformer
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
