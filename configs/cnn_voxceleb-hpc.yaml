@@ -1,5 +1,5 @@
 device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
-num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
+num_runs: 3                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
 
 data:
   dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
