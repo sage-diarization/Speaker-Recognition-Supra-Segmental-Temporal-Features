@@ -98,7 +98,7 @@ def _early_stopping_triggered(epoch, best_epoch, dev_eer_history, patience, min_
         return False
     if (epoch - best_epoch) >= patience:
         return True
-    if min_improvement_rate is not None and epoch - patience >= 0:
+    if min_improvement_rate is not None and epoch - patience >= 0 and epoch < len(dev_eer_history):
         reference_eer = dev_eer_history[epoch - patience]
         current_eer = dev_eer_history[epoch]
         if (reference_eer - current_eer) < min_improvement_rate * reference_eer:
@@ -170,7 +170,11 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
         best_metric = checkpoint["best_metric"]
         best_epoch = checkpoint["best_epoch"]
         best_state = checkpoint["best_model_state_dict"]
-        dev_eer_history = checkpoint["dev_eer_history"]
+        # .get(..., []): checkpoints written before this history was tracked
+        # won't have the key -- resuming from one just means the
+        # min_improvement_rate condition has no history yet and only
+        # evaluates once enough post-resume epochs have accumulated.
+        dev_eer_history = checkpoint.get("dev_eer_history", [])
         _restore_rng_state(checkpoint["rng_state"], dataset, dev_eval_rng)
 
     already_stopped = best_epoch >= 0 and _early_stopping_triggered(

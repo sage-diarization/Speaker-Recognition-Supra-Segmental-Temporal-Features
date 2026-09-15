@@ -27,7 +27,7 @@ training:
   # state across a requeue.
   checkpoint_every_epochs: 1   # VoxCeleb epochs are expensive (see README) -- checkpoint every one
   early_stopping_patience: 10
-  early_stopping_min_improvement_rate: 0.1
+  early_stopping_min_improvement_rate: 0.05
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)

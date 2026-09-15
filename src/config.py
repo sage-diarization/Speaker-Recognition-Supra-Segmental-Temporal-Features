@@ -145,25 +145,28 @@ class TrainingConfig:
     checkpoint_dir: str = "checkpoints"
     # Disk-checkpoint cadence: a checkpoint is written every this-many epochs
     # (and always on the epoch that triggers early stopping or completes
-    # training), so a crashed run never has to redo more than this many
-    # epochs of dev-eval history. TIMIT's cheap epochs tolerate a coarser
-    # cadence (default 25); VoxCeleb's expensive epochs should checkpoint
-    # every single one (override to 1 in VoxCeleb configs).
-    checkpoint_every_epochs: int = 25
+    # training, and whenever dev EER improves -- see best_checkpoint_path),
+    # so a crashed run never has to redo more than this many epochs of
+    # dev-eval history. Left unset (null/None), only the best-so-far and
+    # final/early-stopping checkpoints are written -- no extra periodic ones.
+    # VoxCeleb's expensive epochs should checkpoint every single one
+    # (override to 1 in VoxCeleb configs); TIMIT's cheap epochs can tolerate
+    # a coarser cadence if desired (e.g. 25).
+    checkpoint_every_epochs: int | None = None
     # Stop training once dev EER hasn't improved for this many epochs. The
     # paper itself never stops early -- it always trains the full fixed
     # schedule and reports the best dev checkpoint after the fact -- this is
-    # a pragmatic compute-saving addition on top of that. Set to null/None to
-    # disable early stopping and match the paper's protocol exactly (every
-    # run trains the full num_epochs; the best dev checkpoint is still what
-    # gets kept/reported).
-    early_stopping_patience: int | None = 15
+    # an optional, pragmatic compute-saving addition on top of that. Left
+    # unset (null/None, the default), early stopping is disabled and matches
+    # the paper's protocol exactly (every run trains the full num_epochs;
+    # the best dev checkpoint is still what gets kept/reported).
+    early_stopping_patience: int | None = None
     # Also stop once dev EER has improved by less than this relative rate
     # over the last early_stopping_patience epochs (e.g. 0.10 requires at
     # least a 10% relative drop), even if it did technically improve epoch
-    # over epoch. Set to null/None to disable this condition and keep only
-    # the no-improvement-at-all check above.
-    early_stopping_min_improvement_rate: float | None = 0.10
+    # over epoch. Left unset (null/None, the default), this condition is off
+    # and only the no-improvement-at-all check above applies.
+    early_stopping_min_improvement_rate: float | None = None
 
 
 @dataclass

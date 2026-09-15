@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 from src.config import ExperimentConfig
@@ -79,6 +80,56 @@ def test_resume_continues_from_the_next_epoch_with_restored_weights(tmp_path, sy
     # state must match the checkpoint's best snapshot, not its live one.
     for key in model2.state_dict():
         assert torch.equal(model2.state_dict()[key], checkpoint["best_model_state_dict"][key])
+
+
+def test_resume_from_checkpoint_missing_dev_eer_history_key_does_not_crash(tmp_path, synthetic_utterances):
+    """Checkpoints written by a version of this code that predates
+    dev_eer_history tracking don't have that key at all -- this is exactly
+    what a real resume on the cluster hit (KeyError: 'dev_eer_history'),
+    since every test that exercises resume creates its checkpoints with the
+    current code and so always has the key. Resuming from such a checkpoint
+    must not crash; it should just start the min_improvement_rate
+    condition's history fresh from the resume point."""
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 6
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+    checkpoint_path = tmp_path / "run0.pt"
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+    optimizer = torch.optim.Adam(
+        list(model.parameters()) + list(loss_module.parameters()), lr=config.optimizer.learning_rate
+    )
+
+    # Hand-crafted old-format checkpoint: epoch 2 done, best at epoch 0, no
+    # "dev_eer_history" key.
+    torch.save(
+        {
+            "epoch": 2,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss_module_state_dict": loss_module.state_dict(),
+            "best_metric": 0.1,
+            "best_epoch": 0,
+            "best_model_state_dict": model.state_dict(),
+            "rng_state": trainer._rng_state(dataset, np.random.default_rng()),
+        },
+        checkpoint_path,
+    )
+
+    history = train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        checkpoint_path=checkpoint_path, checkpoint_every_epochs=1,
+        early_stopping_patience=3, min_improvement_rate=0.10,
+    )
+
+    # Epochs 3, 4, 5 remain (resumed from epoch 2's checkpoint).
+    assert len(history) == 3
 
 
 def test_resume_produces_bit_identical_training_to_an_uninterrupted_run(tmp_path, synthetic_utterances):

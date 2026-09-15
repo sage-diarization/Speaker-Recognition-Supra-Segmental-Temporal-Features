@@ -17,13 +17,13 @@ loss:
 training:
   num_epochs: 128
   batch_size: 100
-  early_stopping_patience: null
-  early_stopping_min_improvement_rate: null
   # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
   # nodes) -- /scratch is wiped at job termination, so it can't hold resume
   # state across a requeue.
-  # checkpoint_every_epochs (default 25) and early_stopping_patience
-  # (default 15) are left at their defaults here -- override if needed.
+  # checkpoint_every_epochs, early_stopping_patience and
+  # early_stopping_min_improvement_rate all default to unset (no periodic
+  # checkpoints beyond best/final, early stopping disabled) -- left at that
+  # default here, override if needed.
 
 evaluation:
   sc_num_speakers: 40
