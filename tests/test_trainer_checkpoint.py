@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import torch
 
 from src.config import ExperimentConfig
@@ -222,3 +224,35 @@ def test_best_checkpoint_updates_on_every_improvement_not_just_periodic_cadence(
     best_checkpoint = torch.load(trainer.best_checkpoint_path(checkpoint_path))
     assert best_checkpoint["epoch"] == 2
     assert best_checkpoint["metric"] == 0.3
+
+
+def test_restore_rng_state_moves_the_torch_state_tensor_back_to_cpu(monkeypatch):
+    """train()'s torch.load(checkpoint_path, map_location=device) moves every
+    tensor in the checkpoint onto `device`, including the CPU-only
+    torch.get_rng_state() tensor -- on a CUDA device that silently turns it
+    into a torch.cuda.ByteTensor, which the CPU-only torch.set_rng_state()
+    then rejects with "RNG state must be a torch.ByteTensor". Can't reproduce
+    the real failure without a GPU, so this stands in a fake tensor and
+    checks .cpu() is called on it before it reaches set_rng_state."""
+
+    class FakeCudaTensor:
+        def __init__(self):
+            self.cpu_called = False
+
+        def cpu(self):
+            self.cpu_called = True
+            return self
+
+    fake_state = FakeCudaTensor()
+    received = []
+    monkeypatch.setattr(torch, "set_rng_state", lambda state: received.append(state))
+
+    dataset = SimpleNamespace(rng=SimpleNamespace(bit_generator=SimpleNamespace(state=None)))
+    dev_eval_rng = SimpleNamespace(bit_generator=SimpleNamespace(state=None))
+
+    trainer._restore_rng_state(
+        {"torch": fake_state, "dataset": "dataset-state", "dev_eval": "dev-eval-state"}, dataset, dev_eval_rng
+    )
+
+    assert fake_state.cpu_called
+    assert received == [fake_state]

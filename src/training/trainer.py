@@ -30,7 +30,13 @@ def _rng_state(dataset, dev_eval_rng):
 
 
 def _restore_rng_state(state, dataset, dev_eval_rng):
-    torch.set_rng_state(state["torch"])
+    # state["torch"] is torch.get_rng_state()'s CPU-only ByteTensor (the CUDA
+    # generators' state is restored separately below), but torch.load's
+    # map_location=device in train() applies to every tensor in the
+    # checkpoint indiscriminately -- on a CUDA device that turns this one
+    # into a torch.cuda.ByteTensor too, which the CPU-only set_rng_state()
+    # rejects. Force it back to CPU regardless of what map_location did to it.
+    torch.set_rng_state(state["torch"].cpu())
     dataset.rng.bit_generator.state = state["dataset"]
     dev_eval_rng.bit_generator.state = state["dev_eval"]
     if "torch_cuda" in state and torch.cuda.is_available():
