@@ -44,7 +44,8 @@ def _restore_rng_state(state, dataset, dev_eval_rng):
         torch.cuda.set_rng_state_all([t.cpu() for t in state["torch_cuda"]])
 
 
-def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, best_epoch, best_state, rng_state):
+def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, best_epoch, best_state,
+                      dev_eer_history, rng_state):
     """Writes to a temp file then renames into place (atomic on POSIX) so a
     crash mid-write can never leave a corrupt checkpoint that fails to load
     on resume."""
@@ -59,6 +60,7 @@ def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, be
             "best_metric": best_metric,
             "best_epoch": best_epoch,
             "best_model_state_dict": best_state,
+            "dev_eer_history": dev_eer_history,
             "rng_state": rng_state,
         },
         tmp_path,
@@ -86,13 +88,33 @@ def _save_best_checkpoint(path, epoch, metric, model_state):
     os.replace(tmp_path, path)
 
 
+def _early_stopping_triggered(epoch, best_epoch, dev_eer_history, patience, min_improvement_rate):
+    """True if either: dev EER hasn't improved at all for `patience` epochs,
+    or (when min_improvement_rate is set) it improved by less than that
+    relative rate over the `patience`-epoch window ending at `epoch` --
+    e.g. rate=0.10 requires at least a 10% relative drop in dev EER over that
+    window, even if every epoch in it was technically a (tiny) improvement."""
+    if patience is None:
+        return False
+    if (epoch - best_epoch) >= patience:
+        return True
+    if min_improvement_rate is not None and epoch - patience >= 0:
+        reference_eer = dev_eer_history[epoch - patience]
+        current_eer = dev_eer_history[epoch]
+        if (reference_eer - current_eer) < min_improvement_rate * reference_eer:
+            return True
+    return False
+
+
 def train(model, loss_module, dataset, config, dev_utterances=None, segment_length=None,
           draw_strategy=None, run=None, device="cpu", run_idx=None,
           checkpoint_path=None, checkpoint_every_epochs=None, early_stopping_patience=None,
-          dev_eval_fn=None):
+          min_improvement_rate=None, dev_eval_fn=None):
     """Trains for up to config.training.num_epochs. When dev_utterances is
-    given, evaluates dev-set SV EER after every epoch, stops once dev EER
-    hasn't improved for early_stopping_patience epochs, and keeps the
+    given, evaluates dev-set SV EER after every epoch, stops once either:
+    dev EER hasn't improved at all for early_stopping_patience epochs, or (if
+    min_improvement_rate is given) it improved by less than that relative
+    rate over the last early_stopping_patience epochs -- and keeps the
     best-scoring checkpoint's weights on the model at the end of training --
     matches context/src's EvalCallback + get_reference_data, which is what
     Neururer et al. 2024's Tables 1/2 numbers are actually computed from (the
@@ -110,9 +132,10 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     the file already exists -- including full bit-exact RNG state (torch's
     global RNG, the dataset's segment-draw RNG, and this function's own
     dev-eval RNG), so a crash-and-resume continues the exact same random
-    sequence an uninterrupted run would have produced. If the reloaded
-    best_epoch already implies early_stopping_patience was exhausted before
-    the crash, training is not resumed at all -- just the best weights are
+    sequence an uninterrupted run would have produced. The checkpoint also
+    carries the full per-epoch dev-EER history, so if the reloaded state
+    already implies either early-stopping condition was met before the
+    crash, training is not resumed at all -- just the best weights are
     restored -- since that run had already finished.
 
     Independently of that periodic cadence, best_checkpoint_path(checkpoint_path)
@@ -130,6 +153,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
 
     start_epoch = 0
     best_metric, best_epoch, best_state = None, -1, None
+    dev_eer_history = []
     dev_eval_rng = np.random.default_rng()
     metric_prefix = f"run{run_idx}/" if run_idx is not None else ""
     dev_eval_fn = dev_eval_fn or equal_error_rate
@@ -146,12 +170,11 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
         best_metric = checkpoint["best_metric"]
         best_epoch = checkpoint["best_epoch"]
         best_state = checkpoint["best_model_state_dict"]
+        dev_eer_history = checkpoint["dev_eer_history"]
         _restore_rng_state(checkpoint["rng_state"], dataset, dev_eval_rng)
 
-    already_stopped = (
-        early_stopping_patience is not None
-        and best_epoch >= 0
-        and (start_epoch - 1 - best_epoch) >= early_stopping_patience
+    already_stopped = best_epoch >= 0 and _early_stopping_triggered(
+        start_epoch - 1, best_epoch, dev_eer_history, early_stopping_patience, min_improvement_rate
     )
 
     model.train()
@@ -178,6 +201,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                     model, dev_utterances, segment_length, draw_strategy, device=device, rng=dev_eval_rng
                 )
                 dev_eer = dev_eval_fn(dev_embeddings, dev_labels)
+                dev_eer_history.append(dev_eer)
                 tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}dev/EER": dev_eer})
                 if best_metric is None or dev_eer < best_metric:
                     best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
@@ -185,8 +209,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                         _save_best_checkpoint(best_checkpoint_path(checkpoint_path), best_epoch, best_metric, best_state)
                 model.train()
 
-                stopped_early = (
-                    early_stopping_patience is not None and (epoch - best_epoch) >= early_stopping_patience
+                stopped_early = _early_stopping_triggered(
+                    epoch, best_epoch, dev_eer_history, early_stopping_patience, min_improvement_rate
                 )
                 should_checkpoint = checkpoint_path is not None and (
                     stopped_early
@@ -196,7 +220,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 if should_checkpoint:
                     _save_checkpoint(
                         checkpoint_path, epoch, model, optimizer, loss_module,
-                        best_metric, best_epoch, best_state, _rng_state(dataset, dev_eval_rng),
+                        best_metric, best_epoch, best_state, dev_eer_history, _rng_state(dataset, dev_eval_rng),
                     )
                 if stopped_early:
                     break

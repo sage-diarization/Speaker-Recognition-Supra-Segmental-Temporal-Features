@@ -158,6 +158,12 @@ class TrainingConfig:
     # run trains the full num_epochs; the best dev checkpoint is still what
     # gets kept/reported).
     early_stopping_patience: int | None = 15
+    # Also stop once dev EER has improved by less than this relative rate
+    # over the last early_stopping_patience epochs (e.g. 0.10 requires at
+    # least a 10% relative drop), even if it did technically improve epoch
+    # over epoch. Set to null/None to disable this condition and keep only
+    # the no-improvement-at-all check above.
+    early_stopping_min_improvement_rate: float | None = 0.10
 
 
 @dataclass

@@ -249,6 +249,7 @@ def run_experiment(config, corpus=None, strategies=None):
                 checkpoint_path=checkpoint_path,
                 checkpoint_every_epochs=config.training.checkpoint_every_epochs,
                 early_stopping_patience=config.training.early_stopping_patience,
+                min_improvement_rate=config.training.early_stopping_min_improvement_rate,
                 dev_eval_fn=dev_eval_fn,
             )
 
