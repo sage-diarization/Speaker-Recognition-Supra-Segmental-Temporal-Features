@@ -222,6 +222,29 @@ def test_format_results_reports_percentages_matching_paper_tables():
     assert "0.3750" not in report
 
 
+def test_run_experiment_strategies_argument_restricts_which_strategies_run():
+    # Lets a caller split STRATEGIES across separate processes/GPUs (see
+    # main()'s --strategy flag) -- only the requested strategy should be
+    # trained/evaluated, and format_results must still render cleanly with
+    # the other two absent from results rather than KeyError.
+    config = ExperimentConfig()
+    config.training.num_epochs = 2
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.num_runs = 1
+
+    results = run_experiment(config, corpus=_tiny_stub_corpus(), strategies=("SS",))
+
+    for task in ("SV", "SC"):
+        trained = {train_strategy for train_strategy, _ in results[task]}
+        assert trained == {"SS"}
+
+    report = format_results(results)
+    row_labels = {line.split()[0] for line in report.splitlines() if line[:2] in ("OS", "SS", "SU")}
+    assert row_labels == {"SS"}
+
+
 def _tiny_stub_corpus():
     waveforms = {"TRAIN": {}, "TEST": {}}
     seed = 0

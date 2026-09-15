@@ -146,7 +146,14 @@ def _save_manifest(path, manifest):
     os.replace(tmp_path, path)
 
 
-def run_experiment(config, corpus=None):
+def run_experiment(config, corpus=None, strategies=None):
+    """strategies restricts which of STRATEGIES to train/evaluate (default:
+    all three) -- lets a caller split the 3 strategies across separate
+    processes/GPUs, since each is already independently checkpointed,
+    manifested, and wandb-tracked (see _sweep_dir, _manifest_path,
+    tracking.start_run), so running a subset here never races with another
+    process running a different subset against the same config."""
+    strategies = strategies or STRATEGIES
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
 
@@ -189,7 +196,7 @@ def run_experiment(config, corpus=None):
     if sc_utterances is not None:
         results["SC"] = {}
 
-    for train_strategy in STRATEGIES:
+    for train_strategy in strategies:
         manifest_path = _manifest_path(config, train_strategy)
         manifest = _load_manifest(manifest_path)
 
@@ -310,9 +317,12 @@ def format_results(results):
     for task in ("SV", "SC"):
         if task not in results:
             continue
+        # Only trained strategies have rows -- a --strategy-restricted run
+        # (see run_experiment) leaves the others absent from results[task].
+        trained_strategies = [s for s in STRATEGIES if any((s, t) in results[task] for t in STRATEGIES)]
         lines.append(f"{task} ({'EER' if task == 'SV' else 'MR'}) [%]:")
         lines.append("train\\test  " + "  ".join(f"{s:>14}" for s in STRATEGIES))
-        for train_strategy in STRATEGIES:
+        for train_strategy in trained_strategies:
             row = []
             for test_strategy in STRATEGIES:
                 stats = results[task][(train_strategy, test_strategy)]
@@ -325,10 +335,16 @@ def format_results(results):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="path to a YAML experiment config")
+    parser.add_argument(
+        "--strategy", choices=STRATEGIES, default=None,
+        help="restrict this invocation to a single train_strategy (default: run all %s), "
+             "so multiple invocations can run concurrently on different GPUs against the same config" % (STRATEGIES,),
+    )
     args = parser.parse_args()
 
     config = ExperimentConfig.from_yaml(args.config)
-    results = run_experiment(config)
+    strategies = (args.strategy,) if args.strategy else None
+    results = run_experiment(config, strategies=strategies)
     print(format_results(results))
 
 

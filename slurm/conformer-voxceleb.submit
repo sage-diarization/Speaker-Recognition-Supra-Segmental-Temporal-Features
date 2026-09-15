@@ -3,7 +3,7 @@
 #SBATCH --job-name=sst/conformer-voxceleb
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:3
 #SBATCH --account=cai_cv
 #SBATCH --partition=gpu_top
 #SBATCH --exclude=irvine
@@ -17,12 +17,40 @@
 # crashes before the full config.num_runs x 3 strategies finish, just
 # re-submit this same script -- it picks up exactly where it left off
 # instead of restarting.
+#
+# The 3 training strategies (OS/SS/SU) are fully independent -- each has its
+# own checkpoint dir, resume manifest, and wandb run (src/experiment.py) --
+# so rather than running all 3 sequentially on a single GPU, this requests 3
+# GPUs above and runs one strategy per GPU concurrently via --strategy.
+# Each strategy's console output goes to its own logs/..._<strategy>.out
+# (the combined SBATCH --output above only captures this wrapper script).
 
 source slurm/install.submit
 source slurm/secrets.submit
 
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
-python3 -u -m src.experiment --config configs/conformer_voxceleb-hpc.yaml
+
+if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+    IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
+else
+    GPU_IDS=($(nvidia-smi --query-gpu=index --format=csv,noheader))
+fi
+
+STRATEGIES=(OS SS SU)
+PIDS=()
+for i in "${!STRATEGIES[@]}"; do
+    strategy="${STRATEGIES[$i]}"
+    CUDA_VISIBLE_DEVICES="${GPU_IDS[$i]}" python3 -u -m src.experiment \
+        --config configs/conformer_voxceleb-hpc.yaml --strategy "$strategy" \
+        > "logs/${SLURM_JOB_ID}_${SLURM_NODELIST}__ex02_${strategy}.out" 2>&1 &
+    PIDS+=($!)
+done
+
+STATUS=0
+for pid in "${PIDS[@]}"; do
+    wait "$pid" || STATUS=1
+done
 
 echo "Done."
+exit $STATUS
