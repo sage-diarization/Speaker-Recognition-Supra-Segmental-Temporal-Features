@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --time=360
-#SBATCH --job-name=sst/conformer-timit-os
+#SBATCH --job-name=sst/resnet-timit-os
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -16,7 +16,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/conformer_timit-hpc.yaml \
-	--strategy OS
+  --config configs/resnet_timit-hpc.yaml \
+  --strategy OS
 
 echo "Done."

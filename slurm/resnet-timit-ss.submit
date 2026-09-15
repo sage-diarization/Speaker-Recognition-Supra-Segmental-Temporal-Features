@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --time=360
-#SBATCH --job-name=sst/resnet-timit-su
+#SBATCH --job-name=sst/resnet-timit-ss
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --account=cai_cv
 #SBATCH --partition=gpu_top
 #SBATCH --exclude=irvine
-#SBATCH --output=logs/%j_%N__ex02.out
-#SBATCH --error=logs/%j_%N__ex02.out
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
 
 source slurm/install.submit
 source slurm/secrets.submit
@@ -16,7 +16,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/resnet_timit-hpc.yaml \
-	--strategy SU
+  --config configs/resnet_timit-hpc.yaml \
+  --strategy SS
 
 echo "Done."
