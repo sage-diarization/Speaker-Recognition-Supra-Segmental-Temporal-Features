@@ -30,17 +30,18 @@ def _rng_state(dataset, dev_eval_rng):
 
 
 def _restore_rng_state(state, dataset, dev_eval_rng):
-    # state["torch"] is torch.get_rng_state()'s CPU-only ByteTensor (the CUDA
-    # generators' state is restored separately below), but torch.load's
-    # map_location=device in train() applies to every tensor in the
-    # checkpoint indiscriminately -- on a CUDA device that turns this one
-    # into a torch.cuda.ByteTensor too, which the CPU-only set_rng_state()
-    # rejects. Force it back to CPU regardless of what map_location did to it.
+    # torch.get_rng_state() and torch.cuda.get_rng_state_all() both return
+    # CPU-only ByteTensors (even the latter, despite describing the CUDA
+    # generators' state), but torch.load's map_location=device in train()
+    # applies to every tensor in the checkpoint indiscriminately -- on a CUDA
+    # device that turns both into torch.cuda.ByteTensors, which set_rng_state
+    # and set_rng_state_all (both CPU-ByteTensor-only) then reject. Force
+    # everything back to CPU regardless of what map_location did to it.
     torch.set_rng_state(state["torch"].cpu())
     dataset.rng.bit_generator.state = state["dataset"]
     dev_eval_rng.bit_generator.state = state["dev_eval"]
     if "torch_cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(state["torch_cuda"])
+        torch.cuda.set_rng_state_all([t.cpu() for t in state["torch_cuda"]])
 
 
 def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, best_epoch, best_state, rng_state):

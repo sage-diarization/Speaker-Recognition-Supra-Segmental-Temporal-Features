@@ -226,14 +226,15 @@ def test_best_checkpoint_updates_on_every_improvement_not_just_periodic_cadence(
     assert best_checkpoint["metric"] == 0.3
 
 
-def test_restore_rng_state_moves_the_torch_state_tensor_back_to_cpu(monkeypatch):
+def test_restore_rng_state_moves_the_torch_state_tensors_back_to_cpu(monkeypatch):
     """train()'s torch.load(checkpoint_path, map_location=device) moves every
-    tensor in the checkpoint onto `device`, including the CPU-only
-    torch.get_rng_state() tensor -- on a CUDA device that silently turns it
-    into a torch.cuda.ByteTensor, which the CPU-only torch.set_rng_state()
-    then rejects with "RNG state must be a torch.ByteTensor". Can't reproduce
-    the real failure without a GPU, so this stands in a fake tensor and
-    checks .cpu() is called on it before it reaches set_rng_state."""
+    tensor in the checkpoint onto `device`, including the CPU-only tensors
+    returned by torch.get_rng_state() and torch.cuda.get_rng_state_all() --
+    on a CUDA device that silently turns them into torch.cuda.ByteTensors,
+    which the CPU-ByteTensor-only set_rng_state()/set_rng_state_all() then
+    reject with "RNG state must be a torch.ByteTensor". Can't reproduce the
+    real failure without a GPU, so this stands in fake tensors and checks
+    .cpu() is called on each before it reaches set_rng_state/set_rng_state_all."""
 
     class FakeCudaTensor:
         def __init__(self):
@@ -243,16 +244,28 @@ def test_restore_rng_state_moves_the_torch_state_tensor_back_to_cpu(monkeypatch)
             self.cpu_called = True
             return self
 
-    fake_state = FakeCudaTensor()
-    received = []
-    monkeypatch.setattr(torch, "set_rng_state", lambda state: received.append(state))
+    fake_cpu_state = FakeCudaTensor()
+    fake_cuda_states = [FakeCudaTensor(), FakeCudaTensor()]
+    received_cpu = []
+    received_cuda = []
+    monkeypatch.setattr(torch, "set_rng_state", lambda state: received_cpu.append(state))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "set_rng_state_all", lambda states: received_cuda.append(states))
 
     dataset = SimpleNamespace(rng=SimpleNamespace(bit_generator=SimpleNamespace(state=None)))
     dev_eval_rng = SimpleNamespace(bit_generator=SimpleNamespace(state=None))
 
     trainer._restore_rng_state(
-        {"torch": fake_state, "dataset": "dataset-state", "dev_eval": "dev-eval-state"}, dataset, dev_eval_rng
+        {
+            "torch": fake_cpu_state,
+            "torch_cuda": fake_cuda_states,
+            "dataset": "dataset-state",
+            "dev_eval": "dev-eval-state",
+        },
+        dataset, dev_eval_rng,
     )
 
-    assert fake_state.cpu_called
-    assert received == [fake_state]
+    assert fake_cpu_state.cpu_called
+    assert received_cpu == [fake_cpu_state]
+    assert all(t.cpu_called for t in fake_cuda_states)
+    assert received_cuda == [fake_cuda_states]
