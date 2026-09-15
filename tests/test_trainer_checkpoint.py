@@ -150,6 +150,37 @@ def test_early_stopping_halts_training_after_patience_epochs_without_improvement
     assert len(history) == 4
 
 
+def test_config_early_stopping_patience_null_disables_early_stopping(monkeypatch, synthetic_utterances):
+    """training.early_stopping_patience: null in a YAML config must round-trip
+    to Python None and, passed straight through to train(), train the full
+    num_epochs regardless of dev EER never improving -- matching the paper's
+    own protocol (see src/README.md), which never stops early."""
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig.from_dict({"training": {"early_stopping_patience": None}})
+    assert config.training.early_stopping_patience is None
+    config.training.num_epochs = 6
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    # Dev EER never improves past epoch 0 -- with any finite patience this
+    # would stop early, same setup as the patience=3 test above.
+    eer_sequence = iter([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
+
+    history = train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        early_stopping_patience=config.training.early_stopping_patience,
+    )
+
+    assert len(history) == 6
+
+
 def test_resume_does_not_retrain_past_an_already_exhausted_patience_window(monkeypatch, tmp_path, synthetic_utterances):
     utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
     config = ExperimentConfig()

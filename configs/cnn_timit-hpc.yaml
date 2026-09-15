@@ -17,6 +17,7 @@ loss:
 training:
   num_epochs: 128
   batch_size: 100
+  early_stopping_patience: null
   # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
   # nodes) -- /scratch is wiped at job termination, so it can't hold resume
   # state across a requeue.

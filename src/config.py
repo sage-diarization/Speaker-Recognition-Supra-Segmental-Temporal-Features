@@ -153,8 +153,11 @@ class TrainingConfig:
     # Stop training once dev EER hasn't improved for this many epochs. The
     # paper itself never stops early -- it always trains the full fixed
     # schedule and reports the best dev checkpoint after the fact -- this is
-    # a pragmatic compute-saving addition on top of that.
-    early_stopping_patience: int = 15
+    # a pragmatic compute-saving addition on top of that. Set to null/None to
+    # disable early stopping and match the paper's protocol exactly (every
+    # run trains the full num_epochs; the best dev checkpoint is still what
+    # gets kept/reported).
+    early_stopping_patience: int | None = 15
 
 
 @dataclass

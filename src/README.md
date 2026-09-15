@@ -67,7 +67,10 @@ Training stops early once dev EER hasn't improved for
 `training.early_stopping_patience` epochs (default 15) -- a pragmatic
 compute-saving addition on top of the paper's own methodology, which always
 trains the full fixed schedule and only picks the best checkpoint after the
-fact. A checkpoint is written to disk every `training.checkpoint_every_epochs`
+fact. Set `training.early_stopping_patience` to `null` in the YAML config to
+disable early stopping and match that protocol exactly (every run trains the
+full `training.num_epochs`; the best dev checkpoint is still what gets
+kept/reported). A checkpoint is written to disk every `training.checkpoint_every_epochs`
 epochs (default 25; set to 1 for datasets with expensive epochs, see the
 VoxCeleb configs) under `training.checkpoint_dir`, and automatically resumed
 from -- including full bit-exact random state (torch's global RNG, the
