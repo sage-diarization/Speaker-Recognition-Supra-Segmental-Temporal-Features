@@ -35,6 +35,18 @@ def start_run(wandb_config, name, tags, run_config, run_id=None):
     )
 
 
+def define_repeat_metrics(run, metric_prefix):
+    """Ties every metric under metric_prefix to its own per-repeat `epoch`
+    field as its x-axis, instead of wandb's shared auto-incrementing step --
+    needed because start_run scopes one wandb run across all of a strategy's
+    config.num_runs repeats (see module docstring), so the shared step would
+    otherwise keep climbing across repeats instead of resetting each one back
+    to x=0."""
+    if run is not None:
+        run.define_metric(f"{metric_prefix}epoch")
+        run.define_metric(f"{metric_prefix}*", step_metric=f"{metric_prefix}epoch")
+
+
 def log(run, metrics, step=None):
     if run is not None:
         run.log(metrics, step=step)

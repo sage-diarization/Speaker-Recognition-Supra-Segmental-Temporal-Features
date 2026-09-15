@@ -133,6 +133,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     dev_eval_rng = np.random.default_rng()
     metric_prefix = f"run{run_idx}/" if run_idx is not None else ""
     dev_eval_fn = dev_eval_fn or equal_error_rate
+    if run_idx is not None:
+        tracking.define_repeat_metrics(run, metric_prefix)
 
     checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
     if checkpoint_path is not None and checkpoint_path.exists():
@@ -169,14 +171,14 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 n_batches += 1
             mean_loss = epoch_loss / max(n_batches, 1)
             history.append(mean_loss)
-            tracking.log(run, {f"{metric_prefix}train/loss": mean_loss})
+            tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}train/loss": mean_loss})
 
             if dev_utterances is not None:
                 dev_embeddings, dev_labels = extract_embeddings(
                     model, dev_utterances, segment_length, draw_strategy, device=device, rng=dev_eval_rng
                 )
                 dev_eer = dev_eval_fn(dev_embeddings, dev_labels)
-                tracking.log(run, {f"{metric_prefix}dev/EER": dev_eer})
+                tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}dev/EER": dev_eer})
                 if best_metric is None or dev_eer < best_metric:
                     best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
                     if checkpoint_path is not None:

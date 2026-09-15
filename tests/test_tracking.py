@@ -36,6 +36,9 @@ class _FakeRun:
     def log(self, metrics, step=None):
         self.logged.append((step, metrics))
 
+    def define_metric(self, name, step_metric=None):
+        pass
+
 
 def test_train_logs_loss_to_the_given_run_every_epoch(small_config, synthetic_utterances):
     utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
