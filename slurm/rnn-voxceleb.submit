@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --time=720
-#SBATCH --job-name=sst-experiment_rnn_voxceleb
+#SBATCH --job-name=sst/rnn-voxceleb
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1

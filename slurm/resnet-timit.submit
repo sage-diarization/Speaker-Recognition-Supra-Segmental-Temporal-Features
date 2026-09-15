@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --time=360
-#SBATCH --job-name=sst-experiment_resnet
+#SBATCH --job-name=sst/resnet-timit
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
