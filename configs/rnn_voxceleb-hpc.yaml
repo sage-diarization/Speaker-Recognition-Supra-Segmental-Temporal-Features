@@ -28,7 +28,9 @@ loss:
 training:
   num_epochs: 128
   batch_size: 100
-  checkpoint_dir: "/scratch/checkpoints"  # persists across SLURM job requeues/restarts, unlike a job-local dir
+  # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
+  # nodes) -- /scratch is wiped at job termination, so it can't hold resume
+  # state across a requeue.
   checkpoint_every_epochs: 1   # VoxCeleb epochs are expensive (see README) -- checkpoint every one
   # early_stopping_patience (default 15) is left at its default here --
   # override if needed.
