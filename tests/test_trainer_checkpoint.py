@@ -22,6 +22,7 @@ def test_checkpoint_written_every_checkpoint_every_epochs_and_at_final_epoch(mon
 
     checkpointed_epochs = []
     monkeypatch.setattr(trainer, "_save_checkpoint", lambda path, epoch, *a, **k: checkpointed_epochs.append(epoch))
+    monkeypatch.setattr(trainer, "_save_best_checkpoint", lambda *a, **k: None)
 
     train(
         model, loss_module, dataset, config,
@@ -181,3 +182,43 @@ def test_resume_does_not_retrain_past_an_already_exhausted_patience_window(monke
     )
 
     assert history == []
+
+
+def test_best_checkpoint_updates_on_every_improvement_not_just_periodic_cadence(monkeypatch, tmp_path, synthetic_utterances):
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 5
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+    checkpoint_path = tmp_path / "run0.pt"
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    # Best dev EER occurs at epoch 2; later epochs are worse but not worse
+    # long enough to trigger early stopping (none is configured here).
+    eer_sequence = iter([0.5, 0.4, 0.3, 0.35, 0.4])
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
+
+    main_checkpoint_epochs = []
+    monkeypatch.setattr(trainer, "_save_checkpoint", lambda path, epoch, *a, **k: main_checkpoint_epochs.append(epoch))
+
+    train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        checkpoint_path=checkpoint_path, checkpoint_every_epochs=100,
+    )
+
+    # checkpoint_every_epochs=100 never divides evenly within a 5-epoch run,
+    # so the periodic/final-epoch checkpoint only ever fires once, at the
+    # very last epoch (4).
+    assert main_checkpoint_epochs == [4]
+
+    # The best-checkpoint companion file must already reflect the true best
+    # epoch (2), not epoch 4 -- proving it was written immediately on the
+    # epoch-2 improvement rather than waiting for the periodic/final save.
+    best_checkpoint = torch.load(trainer.best_checkpoint_path(checkpoint_path))
+    assert best_checkpoint["epoch"] == 2
+    assert best_checkpoint["metric"] == 0.3

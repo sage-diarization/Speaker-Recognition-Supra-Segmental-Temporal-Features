@@ -59,6 +59,26 @@ def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, be
     os.replace(tmp_path, path)
 
 
+def best_checkpoint_path(checkpoint_path):
+    """Companion file next to checkpoint_path holding just the best-dev-EER
+    weights so far, rewritten on every improvement (see
+    _save_best_checkpoint) -- unlike checkpoint_path itself, not gated behind
+    checkpoint_every_epochs."""
+    checkpoint_path = Path(checkpoint_path)
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}.best{checkpoint_path.suffix}")
+
+
+def _save_best_checkpoint(path, epoch, metric, model_state):
+    """Rewritten on every dev-EER improvement (not just every
+    checkpoint_every_epochs epochs like _save_checkpoint), so the best
+    weights found so far are never more than one epoch stale on disk even if
+    the process is killed before the next periodic checkpoint."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save({"epoch": epoch, "metric": metric, "model_state_dict": model_state}, tmp_path)
+    os.replace(tmp_path, path)
+
+
 def train(model, loss_module, dataset, config, dev_utterances=None, segment_length=None,
           draw_strategy=None, run=None, device="cpu", run_idx=None,
           checkpoint_path=None, checkpoint_every_epochs=None, early_stopping_patience=None,
@@ -86,7 +106,12 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     sequence an uninterrupted run would have produced. If the reloaded
     best_epoch already implies early_stopping_patience was exhausted before
     the crash, training is not resumed at all -- just the best weights are
-    restored -- since that run had already finished."""
+    restored -- since that run had already finished.
+
+    Independently of that periodic cadence, best_checkpoint_path(checkpoint_path)
+    is (re)written on every dev-EER improvement, so the best weights on disk
+    are never more than one epoch stale even if the process is killed between
+    two periodic checkpoints."""
     model.to(device)
     loss_module.to(device)
     loader = DataLoader(dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True)
@@ -147,6 +172,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 tracking.log(run, {f"{metric_prefix}dev/EER": dev_eer})
                 if best_metric is None or dev_eer < best_metric:
                     best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
+                    if checkpoint_path is not None:
+                        _save_best_checkpoint(best_checkpoint_path(checkpoint_path), best_epoch, best_metric, best_state)
                 model.train()
 
                 stopped_early = (

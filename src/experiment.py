@@ -20,7 +20,7 @@ from .evaluation.clustering import best_misclassification_rate
 from .evaluation.verification import equal_error_rate, trial_list_equal_error_rate
 from .models.losses import build_loss
 from .models.registry import build_model
-from .training.trainer import extract_embeddings, train
+from .training.trainer import best_checkpoint_path, extract_embeddings, train
 
 STRATEGIES = ("OS", "SS", "SU")
 
@@ -275,6 +275,9 @@ def run_experiment(config, corpus=None):
             _save_manifest(manifest_path, manifest)
             if checkpoint_path.exists():
                 checkpoint_path.unlink()
+            best_path = best_checkpoint_path(checkpoint_path)
+            if best_path.exists():
+                best_path.unlink()
 
         # Once all of this strategy's runs are accounted for (freshly run or
         # already in the manifest), log the mean/SD over config.num_runs runs

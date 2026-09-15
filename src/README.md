@@ -73,7 +73,11 @@ VoxCeleb configs) under `training.checkpoint_dir`, and automatically resumed
 from -- including full bit-exact random state (torch's global RNG, the
 segment-draw RNG, and the dev-eval RNG) -- if that file already exists, so a
 crashed or requeued SLURM job continues the exact same training run rather
-than restarting it. Beyond the single in-progress run, `run_experiment`
+than restarting it. Independently of that periodic cadence, a lightweight
+`<checkpoint>.best.pt` companion file is rewritten on every dev-EER
+improvement, so the best weights on disk are never more than one epoch stale
+even if the process is killed between two periodic checkpoints. Beyond the
+single in-progress run, `run_experiment`
 itself tracks which of a strategy's `num_runs` repeats are already complete
 in a small manifest alongside the checkpoints, so re-invoking
 `python -m src.experiment --config ...` after a crash skips straight past
