@@ -258,7 +258,7 @@ def run_experiment(config, corpus=None, strategies=None):
             record = {"sv": {}, "sc": {}} if sc_utterances is not None else {"sv": {}}
             for test_strategy in STRATEGIES:
                 sv_embeddings, sv_labels = extract_embeddings(
-                    model, sv_eval_utterances, segment_length, test_strategy, device=config.device
+                    model, sv_eval_utterances, segment_length, test_strategy, seed=run_idx, device=config.device
                 )
                 eer = sv_eval_fn(sv_embeddings, sv_labels)
                 raw_sv[test_strategy].append(eer)
@@ -267,7 +267,7 @@ def run_experiment(config, corpus=None, strategies=None):
 
                 if sc_utterances is not None:
                     sc_embeddings, sc_labels = extract_embeddings(
-                        model, sc_utterances, segment_length, test_strategy, device=config.device
+                        model, sc_utterances, segment_length, test_strategy, seed=run_idx, device=config.device
                     )
                     mr = best_misclassification_rate(sc_embeddings, sc_labels)
                     raw_sc[test_strategy].append(mr)
