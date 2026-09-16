@@ -36,7 +36,7 @@ training:
   # state across a requeue.
   checkpoint_every_epochs: 1
   early_stopping_patience: 10
-  early_stopping_min_improvement_rate: 0.05
+  early_stopping_min_improvement_rate: 0.03
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
