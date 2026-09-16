@@ -6,7 +6,7 @@ data:
   segment_duration: 1.0
 
 voxceleb:
-  root: "/scratch/voxceleb"   # fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  root: "~/.cache/datasets/voxceleb"   # fetched via torchaudio's VoxCeleb1Verification downloader on first use
   # trial_meta_url must stay the *original* 40-held-out-speaker list -- see
   # src/data/voxceleb.py's module docstring for why the "hard"/"extended"
   # VoxSRC lists don't work with this project's VoxCeleb1-only substitute
