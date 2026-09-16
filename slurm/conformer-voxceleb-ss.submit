@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --time=1440
-#SBATCH --job-name=sst/cnn-voxceleb-os
+#SBATCH --job-name=sst/conformer-voxceleb-ss
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:3
@@ -16,8 +16,8 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/cnn_voxceleb-hpc.yaml \
-	--strategy OS
+	--config configs/conformer_voxceleb-hpc.yaml \
+	--strategy SS
 
 echo "Done."
 
