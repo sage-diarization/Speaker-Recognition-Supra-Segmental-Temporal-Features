@@ -34,9 +34,9 @@ training:
   # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
   # nodes) -- /scratch is wiped at job termination, so it can't hold resume
   # state across a requeue.
-  checkpoint_every_epochs: 1   # VoxCeleb epochs are expensive (see README) -- checkpoint every one
-  # early_stopping_patience defaults to unset (disabled) -- left at that
-  # default here, override if needed.
+  checkpoint_every_epochs: 1
+  early_stopping_patience: 10
+  early_stopping_min_improvement_rate: 0.05
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)

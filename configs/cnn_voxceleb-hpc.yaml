@@ -25,7 +25,7 @@ training:
   # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
   # nodes) -- /scratch is wiped at job termination, so it can't hold resume
   # state across a requeue.
-  checkpoint_every_epochs: 1   # VoxCeleb epochs are expensive (see README) -- checkpoint every one
+  checkpoint_every_epochs: 1
   early_stopping_patience: 10
   early_stopping_min_improvement_rate: 0.05
 
