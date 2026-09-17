@@ -90,21 +90,41 @@ def _save_best_checkpoint(path, epoch, metric, model_state):
 
 
 def _early_stopping_triggered(epoch, best_epoch, dev_eer_history, patience, min_improvement_rate):
-    """True if either: dev EER hasn't improved at all for `patience` epochs,
-    or (when min_improvement_rate is set) it improved by less than that
-    relative rate over the `patience`-epoch window ending at `epoch` --
-    e.g. rate=0.10 requires at least a 10% relative drop in dev EER over that
-    window, even if every epoch in it was technically a (tiny) improvement."""
+    """True if patience epochs have passed since the last epoch that improved
+    on the running-best dev EER at all (plain no-improvement stopping) -- or,
+    when min_improvement_rate is set, since the last epoch that improved on
+    the running-best-as-of-just-before-it by at least that relative rate
+    (e.g. rate=0.10 requires at least a 10% relative drop). The rate check
+    scans every epoch in the trailing patience-epoch window individually
+    against its own immediately-preceding running best, rather than just
+    comparing the window's two endpoints: an epoch deep inside the window can
+    be the one significant improvement, even if a later epoch in the same
+    window regresses back up toward the window's starting value -- comparing
+    only the endpoints would incorrectly stop training in that case, missing
+    the recent significant improvement entirely. Requiring *any* significant
+    improvement anywhere in the window is a strictly stronger bar to avoid
+    stopping than requiring *any* (however tiny) improvement, so when
+    min_improvement_rate is set it fully replaces (rather than being OR'd
+    with) the plain no-improvement-at-all check -- zero improvement is never
+    "significant", so the plain check can never fire on its own once a rate
+    is set without the rate check also firing."""
     if patience is None:
         return False
-    if (epoch - best_epoch) >= patience:
-        return True
-    if min_improvement_rate is not None and epoch - patience >= 0 and epoch < len(dev_eer_history):
-        reference_eer = dev_eer_history[epoch - patience]
-        current_eer = dev_eer_history[epoch]
-        if (reference_eer - current_eer) < min_improvement_rate * reference_eer:
-            return True
-    return False
+    if min_improvement_rate is None:
+        return (epoch - best_epoch) >= patience
+    # epoch >= len(dev_eer_history): a checkpoint written before dev_eer_history
+    # was tracked resumes with a fresh, shorter history no longer aligned to
+    # absolute epoch numbers (see the resume tests) -- too little real history
+    # to judge, so don't trigger rather than index past it.
+    if epoch - patience < 0 or epoch >= len(dev_eer_history):
+        return False
+    window_start = epoch - patience + 1
+    running_best = min(dev_eer_history[:window_start])
+    for i in range(window_start, epoch + 1):
+        if dev_eer_history[i] <= running_best * (1 - min_improvement_rate):
+            return False
+        running_best = min(running_best, dev_eer_history[i])
+    return True
 
 
 def train(model, loss_module, dataset, config, dev_utterances=None, segment_length=None,
@@ -114,9 +134,11 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     """Trains for up to config.training.num_epochs. When dev_utterances is
     given, evaluates dev-set SV EER after every epoch, stops once either:
     dev EER hasn't improved at all for early_stopping_patience epochs, or (if
-    min_improvement_rate is given) it improved by less than that relative
-    rate over the last early_stopping_patience epochs -- and keeps the
-    best-scoring checkpoint's weights on the model at the end of training --
+    min_improvement_rate is given) no epoch within the last
+    early_stopping_patience epochs improved on the running-best dev EER as of
+    just before it by at least that relative rate (see
+    _early_stopping_triggered) -- and keeps the best-scoring checkpoint's
+    weights on the model at the end of training --
     matches context/src's EvalCallback + get_reference_data, which is what
     Neururer et al. 2024's Tables 1/2 numbers are actually computed from (the
     best dev checkpoint, not whatever state training happens to end in).

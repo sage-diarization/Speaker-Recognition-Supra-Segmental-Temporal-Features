@@ -404,6 +404,121 @@ def test_paper_comparable_best_schedule_is_fixed_against_configured_num_epochs(m
     assert paper_comparable_best == 0.4
 
 
+def test_patience_none_never_triggers_regardless_of_other_arguments():
+    assert trainer._early_stopping_triggered(0, 0, [], None, None) is False
+    assert trainer._early_stopping_triggered(100, 0, [0.9] * 101, None, 0.5) is False
+
+
+def test_plain_no_improvement_patience_is_a_closed_lower_bound():
+    # min_improvement_rate=None: pure epoch/best_epoch arithmetic, patience is
+    # a ">=" (closed) bound, not a ">" one.
+    assert trainer._early_stopping_triggered(4, 2, [], 3, None) is False  # 2 epochs since best: not yet
+    assert trainer._early_stopping_triggered(5, 2, [], 3, None) is True   # exactly patience: stop
+    assert trainer._early_stopping_triggered(6, 2, [], 3, None) is True   # past patience: stop
+
+
+def test_plain_check_ignores_dev_eer_history_contents():
+    # With min_improvement_rate=None, dev_eer_history is never consulted --
+    # only epoch/best_epoch arithmetic matters, however the history is shaped.
+    assert trainer._early_stopping_triggered(5, 2, [], 3, None) is True
+    assert trainer._early_stopping_triggered(5, 2, [0.99, 0.01, 0.5], 3, None) is True
+
+
+def test_rate_check_never_triggers_before_a_full_patience_window_of_history_exists():
+    # epoch - patience < 0: even a wildly non-improving history must not
+    # trigger, since there isn't yet a full patience-epoch window to judge.
+    assert trainer._early_stopping_triggered(1, 0, [0.9, 0.9], 3, 0.10) is False
+
+
+def test_rate_check_activates_starting_exactly_at_epoch_equals_patience():
+    # patience=3: epoch=2 (epoch-patience=-1) is one epoch short of a full
+    # window -- must not trigger regardless of the (here, flat/bad) history.
+    assert trainer._early_stopping_triggered(2, 0, [0.5, 0.5, 0.5], 3, 0.10) is False
+    # epoch=3 (epoch-patience=0): the first epoch with a full patience-sized
+    # window available -- flat history here has no significant improvement.
+    assert trainer._early_stopping_triggered(3, 0, [0.5, 0.5, 0.5, 0.5], 3, 0.10) is True
+
+
+def test_significant_improvement_at_the_very_start_of_the_window_prevents_stop():
+    history = [1.0, 1.0, 0.5, 0.9, 0.95]  # epoch 2 (first epoch of the window) is the big win
+    assert trainer._early_stopping_triggered(4, 2, history, 3, 0.10) is False
+
+
+def test_significant_improvement_buried_in_the_middle_of_the_window_prevents_stop():
+    # Regression test for the bug this function used to have: it only
+    # compared the window's two endpoints (dev_eer_history[epoch-patience] vs
+    # dev_eer_history[epoch]), so a big win in the middle of the window
+    # followed by a partial regression back toward the window's starting
+    # value was invisible to it -- epoch 2's 90% improvement here would have
+    # been missed entirely, incorrectly stopping training.
+    history = [0.50, 0.48, 0.05, 0.30, 0.35, 0.49]
+    assert trainer._early_stopping_triggered(5, 2, history, 5, 0.10) is False
+
+
+def test_significant_improvement_only_at_the_final_epoch_of_the_window_prevents_stop():
+    history = [1.0, 1.0, 0.95, 0.93, 0.5]  # epoch 4 (last epoch of the window) is the big win
+    assert trainer._early_stopping_triggered(4, 4, history, 3, 0.10) is False
+
+
+def test_no_epoch_in_the_window_reaches_the_required_rate_triggers_stop():
+    # Every epoch is a (tiny) improvement over the last -- so the plain
+    # no-improvement check alone would never fire -- but none clears the 10%
+    # bar measured against the running best just before it.
+    history = [0.20, 0.196, 0.192, 0.188]
+    assert trainer._early_stopping_triggered(3, 3, history, 3, 0.10) is True
+
+
+def test_flat_or_worsening_history_triggers_stop():
+    history = [0.5, 0.5, 0.6, 0.7]
+    assert trainer._early_stopping_triggered(3, 0, history, 3, 0.10) is True
+
+
+def test_improvement_exactly_at_the_threshold_counts_as_significant():
+    # <=, not <: a relative drop of exactly min_improvement_rate must count.
+    assert trainer._early_stopping_triggered(1, 1, [1.0, 0.8], 1, 0.20) is False
+
+
+def test_improvement_just_short_of_the_threshold_triggers_stop():
+    assert trainer._early_stopping_triggered(1, 1, [1.0, 0.81], 1, 0.20) is True  # 19% < 20%
+
+
+def test_rate_zero_treats_any_improvement_or_tie_as_significant():
+    assert trainer._early_stopping_triggered(1, 1, [0.5, 0.5], 1, 0.0) is False   # tie counts
+    assert trainer._early_stopping_triggered(1, 1, [0.5, 0.51], 1, 0.0) is True   # strictly worse -> stop
+
+
+def test_rate_one_requires_hitting_zero():
+    assert trainer._early_stopping_triggered(1, 1, [0.5, 0.0], 1, 1.0) is False
+    assert trainer._early_stopping_triggered(1, 1, [0.5, 0.0001], 1, 1.0) is True
+
+
+def test_short_history_after_a_pre_history_tracking_checkpoint_resume_does_not_crash():
+    # A checkpoint written before dev_eer_history was tracked resumes with a
+    # fresh, shorter history no longer aligned to absolute epoch numbers (see
+    # test_resume_from_checkpoint_missing_dev_eer_history_key_does_not_crash) --
+    # epoch=5 would index dev_eer_history[5] on a 1-element list without this
+    # guard. Too little real history to judge -- don't trigger, don't crash.
+    assert trainer._early_stopping_triggered(5, 0, [0.01], 3, 0.10) is False
+
+
+def test_best_epoch_argument_is_unused_once_min_improvement_rate_is_set():
+    # Once a rate is given, the rate check fully replaces the plain
+    # best_epoch-based check (see the function's docstring) -- the result
+    # must depend only on dev_eer_history, not on whatever best_epoch says.
+    history = [0.20, 0.196, 0.192, 0.188]
+    assert trainer._early_stopping_triggered(3, -999, history, 3, 0.10) is True
+    assert trainer._early_stopping_triggered(3, 3, history, 3, 0.10) is True
+
+
+def test_window_excludes_epochs_older_than_patience_even_if_they_improved_a_lot():
+    # patience=2, epoch=3 -> window is epochs {2, 3} only. Epoch 1's huge win
+    # is now stale (outside the window) -- it still lowers the running-best
+    # baseline the window is judged against (correctly raising the bar), but
+    # it must not itself count as a "recent" significant improvement.
+    history = [1.0, 0.01, 0.95, 0.94]
+    assert trainer._early_stopping_triggered(3, 1, history, 2, 0.10) is True
+
+
 def test_restore_rng_state_moves_the_torch_state_tensors_back_to_cpu(monkeypatch):
     """train()'s torch.load(checkpoint_path, map_location=device) moves every
     tensor in the checkpoint onto `device`, including the CPU-only tensors
