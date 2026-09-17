@@ -192,7 +192,7 @@ def run_experiment(config, corpus=None, strategies=None):
         # module's reference for TIMIT.
         dev_eval_fn = None
 
-    results = {"SV": {}}
+    results = {"SV": {}, "SV_paper_comparable": {}}
     if sc_utterances is not None:
         results["SC"] = {}
 
@@ -225,11 +225,19 @@ def run_experiment(config, corpus=None, strategies=None):
         # being retrained, so the aggregate is identical to an uninterrupted run.
         raw_sv = {test_strategy: [] for test_strategy in STRATEGIES}
         raw_sc = {test_strategy: [] for test_strategy in STRATEGIES} if sc_utterances is not None else None
+        # Best dev EER over only the 11 epochs Neururer et al. 2024's checkpoint
+        # selection actually searches (see trainer.train's paper_comparable_best) --
+        # one value per run (not per test_strategy: dev eval during training only
+        # ever uses draw_strategy=train_strategy). Older manifests predate this
+        # field, hence the .get.
+        raw_sv_paper_comparable = []
         for completed_record in manifest["completed"].values():
             for test_strategy in STRATEGIES:
                 raw_sv[test_strategy].append(completed_record["sv"][test_strategy])
                 if raw_sc is not None:
                     raw_sc[test_strategy].append(completed_record["sc"][test_strategy])
+            if completed_record.get("sv_paper_comparable") is not None:
+                raw_sv_paper_comparable.append(completed_record["sv_paper_comparable"])
 
         for run_idx in range(config.num_runs):
             if run_idx in manifest["completed"]:
@@ -242,7 +250,7 @@ def run_experiment(config, corpus=None, strategies=None):
             # dev_utterances=sv_eval_utterances + draw_strategy=train_strategy matches
             # context/src's periodic dev-set EER checkpointing (Neururer et al. 2024's
             # reported numbers come from the best such checkpoint, not the final epoch).
-            train(
+            _, paper_comparable_best = train(
                 model, loss_module, dataset, config,
                 dev_utterances=sv_eval_utterances, segment_length=segment_length, draw_strategy=train_strategy,
                 run=run, run_idx=run_idx, device=config.device,
@@ -257,6 +265,10 @@ def run_experiment(config, corpus=None, strategies=None):
             # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
             summary = {}
             record = {"sv": {}, "sc": {}} if sc_utterances is not None else {"sv": {}}
+            record["sv_paper_comparable"] = paper_comparable_best
+            if paper_comparable_best is not None:
+                raw_sv_paper_comparable.append(paper_comparable_best)
+                summary[f"run{run_idx}/final/SV_EER_paper_comparable"] = paper_comparable_best * 100
             for test_strategy in STRATEGIES:
                 sv_embeddings, sv_labels = extract_embeddings(
                     model, sv_eval_utterances, segment_length, test_strategy, seed=run_idx, device=config.device
@@ -302,6 +314,11 @@ def run_experiment(config, corpus=None, strategies=None):
                 results["SC"][(train_strategy, test_strategy)] = sc_stats
                 aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] = sc_stats.mean * 100
                 aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] = sc_stats.std * 100
+        if raw_sv_paper_comparable:
+            paper_stats = _run_statistics(raw_sv_paper_comparable)
+            results["SV_paper_comparable"][train_strategy] = paper_stats
+            aggregate_summary["final/SV_EER_paper_comparable_mean"] = paper_stats.mean * 100
+            aggregate_summary["final/SV_EER_paper_comparable_std"] = paper_stats.std * 100
         tracking.log_summary(run, aggregate_summary)
         tracking.finish(run)
 
@@ -329,6 +346,16 @@ def format_results(results):
                 stats = results[task][(train_strategy, test_strategy)]
                 row.append(f"{stats.mean * 100:6.2f} σ{stats.std * 100:5.2f}")
             lines.append(f"{train_strategy:<11} " + "  ".join(row))
+        lines.append("")
+
+    if results.get("SV_paper_comparable"):
+        # Dev EER of train_strategy against itself, best-of-11 fixed epochs
+        # only -- directly comparable to Neururer et al. 2024's own
+        # checkpoint-selection search (see trainer.train's paper_comparable_best),
+        # unlike the SV table above which searches every epoch.
+        lines.append("SV (dev EER, paper-comparable best-of-11) [%]:")
+        for train_strategy, stats in results["SV_paper_comparable"].items():
+            lines.append(f"{train_strategy:<11} {stats.mean:6.2f} σ{stats.std:5.2f}")
         lines.append("")
     return "\n".join(lines)
 

@@ -145,7 +145,7 @@ def test_run_experiment_end_to_end_on_synthetic_corpus():
     corpus = _StubCorpus(waveforms)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV", "SC"}
+    assert set(results.keys()) == {"SV", "SC", "SV_paper_comparable"}
     for task in ("SV", "SC"):
         for train_strategy in ("OS", "SS", "SU"):
             for test_strategy in ("OS", "SS", "SU"):
@@ -191,7 +191,7 @@ def test_run_experiment_end_to_end_with_conformer_model():
     corpus = _StubCorpus(waveforms)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV", "SC"}
+    assert set(results.keys()) == {"SV", "SC", "SV_paper_comparable"}
     for task in ("SV", "SC"):
         for train_strategy in ("OS", "SS", "SU"):
             for test_strategy in ("OS", "SS", "SU"):
@@ -513,7 +513,7 @@ def test_run_experiment_voxceleb_end_to_end_skips_sc_and_uses_trial_list_eval(tm
     corpus = _make_voxceleb_stub_corpus(tmp_path)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV"}
+    assert set(results.keys()) == {"SV", "SV_paper_comparable"}
     for train_strategy in STRATEGIES:
         for test_strategy in STRATEGIES:
             stats = results["SV"][(train_strategy, test_strategy)]

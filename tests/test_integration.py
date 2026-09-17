@@ -39,7 +39,7 @@ def test_training_loss_decreases_on_synthetic_speakers(synthetic_utterances):
     model = build_model(config)
     loss_module = build_loss(config, bottleneck_dim=512, num_speakers=4)
 
-    history = train(model, loss_module, dataset, config)
+    history, _ = train(model, loss_module, dataset, config)
 
     assert history[-1] < history[0]
 

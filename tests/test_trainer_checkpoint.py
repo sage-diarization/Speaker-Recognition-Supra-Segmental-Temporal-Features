@@ -50,7 +50,7 @@ def test_resume_continues_from_the_next_epoch_with_restored_weights(tmp_path, sy
     model = build_model(config)
     loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
     config.training.num_epochs = 3
-    history_first_half = train(
+    history_first_half, _ = train(
         model, loss_module, dataset, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         checkpoint_path=checkpoint_path, checkpoint_every_epochs=1,
@@ -63,7 +63,7 @@ def test_resume_continues_from_the_next_epoch_with_restored_weights(tmp_path, sy
     model2 = build_model(config)
     loss_module2 = build_loss(config, bottleneck_dim=512, num_speakers=3)
     config.training.num_epochs = 5
-    history_second_half = train(
+    history_second_half, _ = train(
         model2, loss_module2, dataset2, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         checkpoint_path=checkpoint_path, checkpoint_every_epochs=1,
@@ -121,7 +121,7 @@ def test_resume_from_checkpoint_missing_dev_eer_history_key_does_not_crash(tmp_p
         checkpoint_path,
     )
 
-    history = train(
+    history, _ = train(
         model, loss_module, dataset, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         checkpoint_path=checkpoint_path, checkpoint_every_epochs=1,
@@ -152,7 +152,7 @@ def test_resume_produces_bit_identical_training_to_an_uninterrupted_run(tmp_path
         loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
         dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
         config.training.num_epochs = num_epochs
-        history = train(
+        history, _ = train(
             model, loss_module, dataset, config,
             dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
             checkpoint_path=checkpoint_path, checkpoint_every_epochs=1,
@@ -192,7 +192,7 @@ def test_early_stopping_halts_training_after_patience_epochs_without_improvement
     eer_sequence = iter([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
     monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
 
-    history = train(
+    history, _ = train(
         model, loss_module, dataset, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         early_stopping_patience=3,
@@ -221,7 +221,7 @@ def test_early_stopping_halts_on_insufficient_relative_improvement(monkeypatch, 
     eer_sequence = iter([0.20, 0.196, 0.192, 0.188, 0.184, 0.180])
     monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
 
-    history = train(
+    history, _ = train(
         model, loss_module, dataset, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         early_stopping_patience=3, min_improvement_rate=0.10,
@@ -252,7 +252,7 @@ def test_config_early_stopping_patience_null_disables_early_stopping(monkeypatch
     eer_sequence = iter([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
     monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
 
-    history = train(
+    history, _ = train(
         model, loss_module, dataset, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         early_stopping_patience=config.training.early_stopping_patience,
@@ -288,7 +288,7 @@ def test_resume_does_not_retrain_past_an_already_exhausted_patience_window(monke
     model2 = build_model(config)
     loss_module2 = build_loss(config, bottleneck_dim=512, num_speakers=3)
     dataset2 = SegmentDataset(utterances, segment_length, "OS", seed=1)
-    history = train(
+    history, _ = train(
         model2, loss_module2, dataset2, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
         checkpoint_path=checkpoint_path, checkpoint_every_epochs=1, early_stopping_patience=3,
@@ -335,6 +335,73 @@ def test_best_checkpoint_updates_on_every_improvement_not_just_periodic_cadence(
     best_checkpoint = torch.load(trainer.best_checkpoint_path(checkpoint_path))
     assert best_checkpoint["epoch"] == 2
     assert best_checkpoint["metric"] == 0.3
+
+
+def test_paper_comparable_best_only_considers_the_fixed_11_epoch_schedule(monkeypatch, synthetic_utterances):
+    # Matches context/src/utils.py's TEST_EPOCHS default: np.linspace(0, 20, 11)
+    # over num_epochs=21 selects exactly the even epochs {0, 2, 4, ..., 20}.
+    # The global dev-EER minimum below sits at epoch 1 -- an odd, excluded
+    # epoch -- so paper_comparable_best must report the best *even* epoch's
+    # value (0.05, epoch 6), not the true global best (0.01, epoch 1), which
+    # is what the ordinary every-epoch best_metric tracking would use instead.
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 21
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    eer_sequence = [0.9] * 21
+    eer_sequence[1] = 0.01
+    eer_sequence[6] = 0.05
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: eer_sequence.pop(0))
+
+    _, paper_comparable_best = train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+    )
+
+    assert paper_comparable_best == 0.05
+
+
+def test_paper_comparable_best_schedule_is_fixed_against_configured_num_epochs(monkeypatch, tmp_path, synthetic_utterances):
+    # If the 11-epoch schedule were instead computed from however many epochs
+    # this run actually completes (rather than the configured num_epochs), it
+    # would be contaminated by early stopping's own epoch-by-epoch dev-EER
+    # signal (patience-based stopping always ends close to the true best
+    # epoch -- see the reasoning in trainer.train's docstring). Here
+    # num_epochs=21 fixes the schedule at {0, 2, 4, ..., 20} *before* training
+    # starts; early stopping (patience=2, best epoch=1) then cuts the run
+    # short after epoch 3, so only schedule epochs {0, 2} were ever reached.
+    # The correct result is min(epoch 0, epoch 2) = 0.4 -- if the schedule
+    # were instead recomputed over the actual 4-epoch run length, epochs 1
+    # and 3 would also be in-bounds and the (wrong) result would be 0.01.
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 21
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    eer_sequence = iter([0.5, 0.01, 0.4, 0.6])
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: next(eer_sequence))
+
+    history, paper_comparable_best = train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        early_stopping_patience=2,
+    )
+
+    assert len(history) == 4  # confirms early stopping actually cut the 21-epoch run short
+    assert paper_comparable_best == 0.4
 
 
 def test_restore_rng_state_moves_the_torch_state_tensors_back_to_cpu(monkeypatch):

@@ -45,7 +45,7 @@ def _restore_rng_state(state, dataset, dev_eval_rng):
 
 
 def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, best_epoch, best_state,
-                      dev_eer_history, rng_state):
+                      dev_eer_history, rng_state, paper_comparable_best):
     """Writes to a temp file then renames into place (atomic on POSIX) so a
     crash mid-write can never leave a corrupt checkpoint that fails to load
     on resume."""
@@ -62,6 +62,7 @@ def _save_checkpoint(path, epoch, model, optimizer, loss_module, best_metric, be
             "best_model_state_dict": best_state,
             "dev_eer_history": dev_eer_history,
             "rng_state": rng_state,
+            "paper_comparable_best": paper_comparable_best,
         },
         tmp_path,
     )
@@ -141,7 +142,28 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     Independently of that periodic cadence, best_checkpoint_path(checkpoint_path)
     is (re)written on every dev-EER improvement, so the best weights on disk
     are never more than one epoch stale even if the process is killed between
-    two periodic checkpoints."""
+    two periodic checkpoints.
+
+    Returns (history, paper_comparable_best): history is the per-epoch mean
+    training loss; paper_comparable_best is the best dev EER seen at only the
+    11 epochs np.linspace(0, config.training.num_epochs-1, 11) selects (or
+    None if dev_utterances wasn't given, or none of those epochs have been
+    reached yet -- e.g. early stopping fired first). Those 11 fixed positions
+    match context/src/utils.py's TEST_EPOCHS default and
+    context/src/evaluation/callback.py's EvalCallback, which is what Neururer
+    et al. 2024's Tables 1/2 numbers actually search over -- unlike
+    best_metric/best_state above, which search every epoch and so read
+    optimistic relative to the paper. The schedule is fixed from the
+    *configured* num_epochs, not from however many epochs this run actually
+    completes, so it stays independent of early stopping's own epoch-by-epoch
+    dev-EER signal: early stopping's cutoff is itself a function of where the
+    best epoch was (patience-based stopping always ends ~patience epochs
+    after it), so computing the linspace over the run's actual length would
+    let one of the 11 samples (always the last one) land suspiciously close
+    to the true optimum, reintroducing the same kind of search-power bias
+    this metric exists to avoid. Fixing the schedule against num_epochs means
+    a truncated run simply yields fewer than 11 candidates -- more
+    conservative than the paper's search, never more lenient."""
     model.to(device)
     loss_module.to(device)
     loader = DataLoader(dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True)
@@ -154,6 +176,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     start_epoch = 0
     best_metric, best_epoch, best_state = None, -1, None
     dev_eer_history = []
+    paper_comparable_best = None
+    paper_comparable_epochs = frozenset(np.linspace(0, config.training.num_epochs - 1, 11).astype(int).tolist())
     dev_eval_rng = np.random.default_rng()
     metric_prefix = f"run{run_idx}/" if run_idx is not None else ""
     dev_eval_fn = dev_eval_fn or equal_error_rate
@@ -175,6 +199,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
         # min_improvement_rate condition has no history yet and only
         # evaluates once enough post-resume epochs have accumulated.
         dev_eer_history = checkpoint.get("dev_eer_history", [])
+        paper_comparable_best = checkpoint.get("paper_comparable_best")
         _restore_rng_state(checkpoint["rng_state"], dataset, dev_eval_rng)
 
     already_stopped = best_epoch >= 0 and _early_stopping_triggered(
@@ -207,6 +232,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 dev_eer = dev_eval_fn(dev_embeddings, dev_labels)
                 dev_eer_history.append(dev_eer)
                 tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}dev/EER": dev_eer})
+                if epoch in paper_comparable_epochs and (paper_comparable_best is None or dev_eer < paper_comparable_best):
+                    paper_comparable_best = dev_eer
                 if best_metric is None or dev_eer < best_metric:
                     best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
                     if checkpoint_path is not None:
@@ -225,13 +252,14 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                     _save_checkpoint(
                         checkpoint_path, epoch, model, optimizer, loss_module,
                         best_metric, best_epoch, best_state, dev_eer_history, _rng_state(dataset, dev_eval_rng),
+                        paper_comparable_best,
                     )
                 if stopped_early:
                     break
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    return history
+    return history, paper_comparable_best
 
 
 def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng):
