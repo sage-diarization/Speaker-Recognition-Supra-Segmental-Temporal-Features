@@ -16,7 +16,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/conformer_voxceleb-hpc.yaml \
+	--config configs/conformer-voxceleb.yaml \
 	--strategy OS
 
 echo "Done."

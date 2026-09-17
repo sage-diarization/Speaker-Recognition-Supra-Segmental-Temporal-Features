@@ -16,7 +16,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/cnn_timit-hpc.yaml \
+	--config configs/cnn-timit.yaml \
 	--strategy OS
 
 echo "Done."

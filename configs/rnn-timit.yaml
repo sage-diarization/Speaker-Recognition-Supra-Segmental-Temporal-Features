@@ -2,23 +2,20 @@ device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. 
 num_runs: 5                # independent train/test runs per strategy to average EER/MR mean+SD over (Neururer et al. 2024 Section 2.3)
 
 data:
-  timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree
-  archive_path: ""        # or a local .zip of your own licensed TIMIT copy
-  download_url: "https://murena.io/public.php/dav/files/6rcWL6H4DQdJ4Yj/?accept=zip"        # or a URL to YOUR OWN hosted copy (see src/README.md)
-  cache_dir: "/scratch/timit"
+  timit_root: "~/.cache/datasets/timit"          # path to an already-extracted TIMIT TRAIN/TEST tree
+  # archive_path: "" # or a local .zip of your own licensed TIMIT copy
+  # download_url: "" # or a URL to YOUR OWN hosted copy (see src/README.md)
+  # cache_dir: "~/.cache/datasets/timit"
   segment_duration: 1.0
 
 model:
-  type: "Conformer"
+  type: "RNN"
 
-conformer:
-  encoder_dim: 144        # Gulati et al. 2020 Conformer(S) dimension
-  num_layers: 4            # paper uses 16 for LibriSpeech ASR; scaled down for TIMIT-scale segments
-  num_heads: 4
-  ff_expansion_factor: 4
-  conv_kernel_size: 31     # must be odd; paper's Table 1 rounds this to 32
-  dropout: 0.1
-  use_relative_positional_encoding: true
+# transformation defaults (mel, hann window) already match context/src's
+# DeepVoice front-end, which the RNN (like the CNN) uses -- no overrides needed.
+
+rnn:
+  hidden_size: 512          # per-direction BiLSTM hidden size (context/src/models/backend/LSTM.py)
 
 loss:
   type: "ANGULAR_MARGIN"

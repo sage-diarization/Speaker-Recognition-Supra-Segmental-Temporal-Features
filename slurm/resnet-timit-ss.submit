@@ -16,7 +16,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-  --config configs/resnet_timit-hpc.yaml \
+  --config configs/resnet-timit.yaml \
   --strategy SS
 
 echo "Done."

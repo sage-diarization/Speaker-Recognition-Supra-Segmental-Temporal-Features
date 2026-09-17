@@ -2,10 +2,10 @@ device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. 
 num_runs: 5                # independent train/test runs per strategy to average EER/MR mean+SD over (Neururer et al. 2024 Section 2.3)
 
 data:
-  timit_root: ""          # path to an already-extracted TIMIT TRAIN/TEST tree
-  archive_path: ""        # or a local .zip of your own licensed TIMIT copy
-  download_url: "https://murena.io/public.php/dav/files/6rcWL6H4DQdJ4Yj/?accept=zip"        # or a URL to YOUR OWN hosted copy (see src/README.md)
-  cache_dir: "/scratch/timit"
+  timit_root: "~/.cache/datasets/timit"          # path to an already-extracted TIMIT TRAIN/TEST tree
+  # archive_path: "" # or a local .zip of your own licensed TIMIT copy
+  # download_url: "" # or a URL to YOUR OWN hosted copy (see src/README.md)
+  # cache_dir: "~/.cache/datasets/timit"
   segment_duration: 1.0
 
 model:
