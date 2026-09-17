@@ -46,7 +46,7 @@ class DataConfig:
     timit_root: str = ""
     archive_path: str = ""
     download_url: str = ""
-    cache_dir: str = "~/.cache/sst-experiment/timit"
+    cache_dir: str = f"~/.cache/datasets/{dataset.lower()}"
 
     def segment_length(self, transformation: TransformationConfig):
         return int(self.segment_duration * transformation.steps_per_second)
