@@ -212,6 +212,16 @@ if __name__ == "__main__":
     # Each (mean, std, n) is computed from your 5 runs per test, and the
     # paper's reported (mean, std, n) for that same test.
 
+    # NOTE: pooling assumes the tests within an experiment (or across
+    # experiments) measure a comparable quantity (e.g. the same metric on
+    # related conditions). If the tests are measuring genuinely different
+    # things, pooling them into one number can be misleading — inspect the
+    # per-test results above before leaning on the pooled/overall verdict.
+
+    print("#" * 70)
+    print("# Table 1: SC results on TIMIT [MR mean/std]")
+    print("#" * 70)
+
     run_comparisons({
         "CNN-timit-OS": {
             "OS": {
@@ -234,12 +244,6 @@ if __name__ == "__main__":
             },
         },
     })
-
-    # NOTE: pooling assumes the tests within an experiment (or across
-    # experiments) measure a comparable quantity (e.g. the same metric on
-    # related conditions). If the tests are measuring genuinely different
-    # things, pooling them into one number can be misleading — inspect the
-    # per-test results above before leaning on the pooled/overall verdict.
 
     print("=" * 70)
 
@@ -266,6 +270,8 @@ if __name__ == "__main__":
         },
     })
 
+    print("=" * 70)
+
     run_comparisons({
         "ResNet-timit-OS": {
             "OS": {
@@ -274,7 +280,7 @@ if __name__ == "__main__":
             },
             "SS": {
                 "yours": (11.25, 2.7386127875258306, 5),
-                "paper": (12.75, 4.430011286667337, 5),
+                "paper": (11.75, 4.29, 5),
             },
         },
         "ResNet-timit-SS": {
@@ -285,6 +291,33 @@ if __name__ == "__main__":
             "SS": {
                 "yours": (4.75, 2.2912878474779195, 5),
                 "paper": (1.0, 0.94, 5),
+            },
+        },
+    })
+
+    print("#" * 70)
+    print("# Table 2: SV results on TIMIT [EER mean/std]")
+    print("#" * 70)
+
+    run_comparisons({
+        "CNN-timit-OS": {
+            "OS": {
+                "yours": (4.9565614801915885, 0.08280328910757775, 5),
+                "paper": (6.38, 0.12, 5),
+            },
+            "SS": {
+                "yours": (11.46440927667012, 1.4578152747516038, 5),
+                "paper": (11.9, 0.36, 5),
+            },
+        },
+        "CNN-timit-SS": {
+            "OS": {
+                "yours": (12.471711787884097, 3.677900974473843, 5),
+                "paper": (8.16, 0.42, 5),
+            },
+            "SS": {
+                "yours": (4.987939993071387, 0.15249728647801633, 5),
+                "paper": (5.78, 0.16, 5),
             },
         },
     })
