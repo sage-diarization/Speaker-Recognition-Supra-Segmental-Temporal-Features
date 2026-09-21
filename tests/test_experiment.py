@@ -123,6 +123,59 @@ def test_build_sc_utterances_splits_short_and_long_per_speaker():
         assert min(lengths) < max(lengths)  # short (2 sentences) vs. long (remaining 3)
 
 
+def test_featurize_train_dev_split_holds_out_configured_utterances_per_speaker():
+    # Checkpoint-selection dev EER must come from TRAIN speakers' own held-out
+    # utterances (never gradient-trained on), not from TEST -- see
+    # run_experiment's use of this split and the "dev/test leakage" fix it's
+    # part of.
+    waveforms = {"TRAIN": {}}
+    for speaker in range(3):
+        speaker_id = f"SPK{speaker}"
+        waveforms["TRAIN"][speaker_id] = [
+            make_synthetic_waveform(200 + 150 * speaker, 1.0, 16000, seed=speaker * 10 + i) for i in range(5)
+        ]
+    corpus = _StubCorpus(waveforms)
+    transformation = ExperimentConfig().transformation
+
+    train_utterances, dev_utterances, label_map = experiment_module._featurize_train_dev_split(
+        corpus, transformation, dev_holdout_per_speaker=2
+    )
+
+    assert set(label_map.keys()) == {"SPK0", "SPK1", "SPK2"}
+    assert len(dev_utterances) == 3 * 2  # 2 held-out utterances x 3 speakers
+    assert len(train_utterances) == 3 * 3  # remaining 3 utterances x 3 speakers
+    # Every speaker appears in both pools (held-out utterances, not held-out speakers).
+    assert {label for _, label in dev_utterances} == set(label_map.values())
+    assert {label for _, label in train_utterances} == set(label_map.values())
+
+
+def test_run_experiment_dev_checkpoint_selection_excludes_test_split(monkeypatch):
+    # Regression test for the dev/test leakage fix: before it, dev_utterances
+    # passed to train() *was* sv_eval_utterances (the TEST split), so its size
+    # equaled TEST's full utterance count. Now it must be TRAIN's own held-out
+    # pool, sized dev_holdout_per_speaker x num_train_speakers instead.
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.dev_holdout_per_speaker = 2  # >=2 so the dev pool has genuine (same-speaker) pairs
+    config.num_runs = 1
+
+    corpus = _tiny_stub_corpus()  # 2 TRAIN/TEST speakers, 3 utterances each
+    real_train = experiment_module.train
+    captured_dev_utterance_counts = []
+
+    def _spy_train(model, loss_module, dataset, cfg, **kwargs):
+        captured_dev_utterance_counts.append(len(kwargs["dev_utterances"]))
+        return real_train(model, loss_module, dataset, cfg, **kwargs)
+
+    monkeypatch.setattr(experiment_module, "train", _spy_train)
+    run_experiment(config, corpus=corpus, strategies=("OS",))
+
+    assert captured_dev_utterance_counts == [4]  # 2 held-out utterances x 2 TRAIN speakers, not TEST's 6
+
+
 def test_run_experiment_end_to_end_on_synthetic_corpus():
     config = ExperimentConfig()
     config.training.num_epochs = 3

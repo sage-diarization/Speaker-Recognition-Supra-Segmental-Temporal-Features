@@ -51,6 +51,29 @@ def _featurize_split(corpus, split, transformation):
     return utterances, label_map
 
 
+def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
+    """Splits TRAIN into an actual-training pool and a held-out dev pool
+    (dev_holdout_per_speaker of each speaker's utterances, deterministically
+    the first sorted paths), so periodic checkpoint selection during training
+    draws from TRAIN speakers' own held-out utterances instead of the TEST
+    split -- context/src's generator.py does the analogous thing, splitting
+    AUDIO_LIST_TRAIN/AUDIO_LIST_VAL out of the same speaker pool
+    (load_train_val_locs) rather than ever touching TEST before final
+    scoring. Both returned utterance lists share one label_map, so dev EER's
+    same-speaker/different-speaker pairing is correct."""
+    speakers = corpus.speakers("TRAIN")
+    label_map = {speaker: i for i, speaker in enumerate(speakers)}
+    train_utterances, dev_utterances = [], []
+    for speaker in speakers:
+        paths = sorted(corpus.utterance_paths("TRAIN", speaker))
+        for i, path in enumerate(paths):
+            waveform, _ = corpus.load_waveform(path)
+            features = featurize_waveform(waveform, transformation)
+            target = dev_utterances if i < dev_holdout_per_speaker else train_utterances
+            target.append((features, label_map[speaker]))
+    return train_utterances, dev_utterances, label_map
+
+
 def build_sc_utterances(corpus, split, transformation, num_speakers):
     """Builds the SC task's per-speaker utterances by concatenating sentences
     rather than using single raw sentences, per Neururer et al. 2024 Section
@@ -171,6 +194,7 @@ def run_experiment(config, corpus=None, strategies=None):
         corpus = corpus or VoxCelebCorpus(config)
         train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation)
         sv_eval_utterances = _lazy_trial_utterances(corpus, transformation)
+        dev_utterances = sv_eval_utterances
         sc_utterances = None
 
         def sv_eval_fn(embeddings, utterance_ids):
@@ -183,7 +207,9 @@ def run_experiment(config, corpus=None, strategies=None):
         dev_eval_fn = sv_eval_fn
     else:
         corpus = corpus or TimitCorpus(config.data)
-        train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation)
+        train_utterances, dev_utterances, train_label_map = _featurize_train_dev_split(
+            corpus, transformation, config.evaluation.dev_holdout_per_speaker
+        )
         sv_eval_utterances, _ = _featurize_split(corpus, "TEST", transformation)
         sc_utterances = build_sc_utterances(corpus, "TEST", transformation, config.evaluation.sc_num_speakers)
         sv_eval_fn = equal_error_rate
@@ -247,12 +273,16 @@ def run_experiment(config, corpus=None, strategies=None):
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
             checkpoint_path = _checkpoint_path(config, train_strategy, run_idx)
-            # dev_utterances=sv_eval_utterances + draw_strategy=train_strategy matches
-            # context/src's periodic dev-set EER checkpointing (Neururer et al. 2024's
-            # reported numbers come from the best such checkpoint, not the final epoch).
+            # dev_utterances (TIMIT: held out from TRAIN, never gradient-trained on or
+            # touched again until here; VoxCeleb: the trial-pairs pool, already excluded
+            # from training -- see run_experiment's is_voxceleb branch) + draw_strategy=
+            # train_strategy matches context/src's periodic dev-set EER checkpointing
+            # (Neururer et al. 2024's reported numbers come from the best such
+            # checkpoint, not the final epoch), while keeping TEST/sv_eval_utterances
+            # itself untouched until final scoring below.
             _, paper_comparable_best = train(
                 model, loss_module, dataset, config,
-                dev_utterances=sv_eval_utterances, segment_length=segment_length, draw_strategy=train_strategy,
+                dev_utterances=dev_utterances, segment_length=segment_length, draw_strategy=train_strategy,
                 run=run, run_idx=run_idx, device=config.device,
                 checkpoint_path=checkpoint_path,
                 checkpoint_every_epochs=config.training.checkpoint_every_epochs,

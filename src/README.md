@@ -58,10 +58,15 @@ conclusions" for both tasks).
 Each run evaluates dev-set SV EER after *every* epoch and keeps the
 best-scoring checkpoint's weights, matching `context/src`'s `EvalCallback` +
 `get_reference_data`: the paper's Tables 1/2 numbers come from that best dev
-checkpoint, not from whatever state training happens to end in. The dev set
-reuses the held-out TEST-split utterances (the same pool the "full" final
-numbers are drawn from), since the original's own `development` list is
-itself a subset of that pool rather than a disjoint speaker split.
+checkpoint, not from whatever state training happens to end in. On TIMIT,
+this dev set is `evaluation.dev_holdout_per_speaker` (default 2) of each
+TRAIN speaker's own utterances, held out from gradient training and used
+only for this periodic checkpoint selection (see `experiment.py`'s
+`_featurize_train_dev_split`) -- mirroring context/src's own
+`AUDIO_LIST_TRAIN`/`AUDIO_LIST_VAL` split out of the same TRAIN speaker pool
+(`generator.py`'s `load_train_val_locs`). The TEST split stays completely
+untouched until final SV/SC scoring, so checkpoint selection never draws
+from the same pool the reported numbers come from.
 
 Training stops early once dev EER hasn't improved for
 `training.early_stopping_patience` epochs (default 15) -- a pragmatic

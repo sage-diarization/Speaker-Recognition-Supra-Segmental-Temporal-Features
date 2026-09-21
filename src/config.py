@@ -174,6 +174,12 @@ class EvaluationConfig:
     segment_draw: str = "OS"
     sv_max_sentences: int = 0
     sc_num_speakers: int = 40
+    # TIMIT only: this many of each TRAIN speaker's utterances (deterministically,
+    # the first dev_holdout_per_speaker sorted paths) are held out from gradient
+    # training and used instead for periodic dev-EER checkpoint selection, so
+    # checkpoint selection never draws from the same pool as the final TEST-set
+    # SV/SC numbers (see src/experiment.py's _featurize_train_dev_split).
+    dev_holdout_per_speaker: int = 2
 
 
 @dataclass
