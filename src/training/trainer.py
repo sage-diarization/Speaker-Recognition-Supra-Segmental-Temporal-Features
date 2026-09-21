@@ -4,11 +4,38 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .. import tracking
 from ..data.lazy_features import resolve_features
 from ..evaluation.verification import equal_error_rate
+
+
+def _weight_decay_param_groups(model, loss_module, weight_decay):
+    """context/src only ever L2-regularizes Conv2D/Dense kernels (and, for
+    ResNet's aggregation head, their biases) via Keras' kernel_regularizer/
+    bias_regularizer -- BatchNorm's affine params, GhostVLAD's cluster
+    centers (context/src/models/aggregation/blocks/vlad.py's `self.cluster`,
+    added via add_weight with no regularizer), and the angular-margin loss's
+    classifier matrix (context/src/models/losses/angular_margin.py's `W`,
+    same) are never regularized there. torch.optim.Adam's weight_decay
+    applies indiscriminately to every parameter passed to it, so split
+    params into decay/no-decay groups to match, instead of handing it
+    model.parameters() + loss_module.parameters() directly."""
+    decay, no_decay = [], []
+    for module in model.modules():
+        is_norm = isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d))
+        for name, param in module.named_parameters(recurse=False):
+            if is_norm or name == "cluster":
+                no_decay.append(param)
+            else:
+                decay.append(param)
+    no_decay.extend(loss_module.parameters())
+    return [
+        {"params": decay, "weight_decay": weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
 
 
 def _rng_state(dataset, dev_eval_rng):
@@ -190,9 +217,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     loss_module.to(device)
     loader = DataLoader(dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True)
     optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(loss_module.parameters()),
+        _weight_decay_param_groups(model, loss_module, config.optimizer.weight_decay),
         lr=config.optimizer.learning_rate,
-        weight_decay=config.optimizer.weight_decay,
     )
 
     start_epoch = 0

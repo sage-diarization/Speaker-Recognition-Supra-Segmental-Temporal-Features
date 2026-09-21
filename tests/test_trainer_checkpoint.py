@@ -102,7 +102,8 @@ def test_resume_from_checkpoint_missing_dev_eer_history_key_does_not_crash(tmp_p
     model = build_model(config)
     loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
     optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(loss_module.parameters()), lr=config.optimizer.learning_rate
+        trainer._weight_decay_param_groups(model, loss_module, config.optimizer.weight_decay),
+        lr=config.optimizer.learning_rate,
     )
 
     # Hand-crafted old-format checkpoint: epoch 2 done, best at epoch 0, no
