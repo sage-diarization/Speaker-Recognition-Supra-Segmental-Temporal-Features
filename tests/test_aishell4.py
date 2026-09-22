@@ -96,3 +96,53 @@ def test_raises_when_root_is_not_configured(tmp_path, monkeypatch):
     config = ExperimentConfig()
     with pytest.raises(Aishell4NotAvailableError):
         Aishell4Corpus(config)
+
+
+def test_prefers_pre_converted_mono_wav_over_flac(tmp_path):
+    # The official release ships <session_id>.flac (8-channel) under wav/;
+    # a locally pre-converted <session_id>_16k_mono.wav sitting alongside it
+    # should be used instead (cheaper to read, already single-channel).
+    root = tmp_path / "aishell4"
+    wav_dir = root / "train_S" / "wav"
+    wav_dir.mkdir(parents=True)
+    _write_wav(wav_dir / "sess1.flac", duration_s=6.0)
+    _write_wav(wav_dir / "sess1_16k_mono.wav", duration_s=6.0)
+    _write_textgrid(root / "train_S" / "TextGrid" / "sess1.TextGrid", {"SPK1": [(0.0, 2.0, "hi")]}, 6.0)
+    _write_session(root / "test", "test_sess1", {"SPK1": [(0.0, 2.0, "foo")]})
+
+    corpus = Aishell4Corpus(_config_for(root))
+
+    segment = corpus.utterance_paths("TRAIN", "sess1__SPK1")[0]
+    assert segment.wav_path == wav_dir / "sess1_16k_mono.wav"
+
+
+def test_falls_back_to_flac_when_no_mono_wav_present(tmp_path):
+    # A copy that only has the official release's own audio (no local
+    # pre-conversion step) should still work, reading the .flac directly.
+    root = tmp_path / "aishell4"
+    wav_dir = root / "train_S" / "wav"
+    wav_dir.mkdir(parents=True)
+    _write_wav(wav_dir / "sess1.flac", duration_s=6.0)
+    _write_textgrid(root / "train_S" / "TextGrid" / "sess1.TextGrid", {"SPK1": [(0.0, 2.0, "hi")]}, 6.0)
+    _write_session(root / "test", "test_sess1", {"SPK1": [(0.0, 2.0, "foo")]})
+
+    corpus = Aishell4Corpus(_config_for(root))
+
+    segment = corpus.utterance_paths("TRAIN", "sess1__SPK1")[0]
+    assert segment.wav_path == wav_dir / "sess1.flac"
+    waveform, sample_rate = corpus.load_waveform(segment)
+    assert sample_rate == 16000
+    assert waveform.shape[0] == corpus.raw_sample_count(segment)
+
+
+def test_ignores_rttm_sibling_files_in_textgrid_dir(tmp_path):
+    # TextGrid/ also holds a same-stem .rttm per session -- must not be
+    # mistaken for a second session with no matching audio.
+    root = tmp_path / "aishell4"
+    _write_session(root / "train_S", "sess1", {"SPK1": [(0.0, 2.0, "hi")]})
+    (root / "train_S" / "TextGrid" / "sess1.rttm").write_text("SPEAKER sess1 1 0.0 2.0 <NA> <NA> SPK1 <NA> <NA>\n")
+    _write_session(root / "test", "test_sess1", {"SPK1": [(0.0, 2.0, "foo")]})
+
+    corpus = Aishell4Corpus(_config_for(root))
+
+    assert corpus.speakers("TRAIN") == ["sess1__SPK1"]

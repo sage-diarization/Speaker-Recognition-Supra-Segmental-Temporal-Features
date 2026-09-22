@@ -2,9 +2,10 @@
 
 Structurally very different from TIMIT/VoxCeleb: AISHELL-4 isn't shipped as
 pre-segmented per-speaker utterance files but as long multi-speaker meeting
-recordings (one 8-channel .wav per session) plus a per-session TextGrid
-annotating who spoke when. Two deliberate simplifications follow from that,
-chosen together with the project owner rather than assumed silently:
+recordings (one 8-channel .flac per session, under wav/ despite the
+extension) plus a per-session TextGrid (and an accompanying .rttm, unused
+here) annotating who spoke when. Two deliberate simplifications follow from
+that, chosen together with the project owner rather than assumed silently:
 
 - Speaker identity: AISHELL-4's TextGrid tiers are speaker labels *local to
   their own session* (e.g. two different sessions' "SPK1" tiers are
@@ -15,7 +16,12 @@ chosen together with the project owner rather than assumed silently:
   train_*/ vs test/ session split, no separate held-out-session logic needed.
 - Audio channel: only the first of the (typically 8) array channels is used,
   no beamforming -- matching how TIMIT/VoxCeleb are consumed as
-  single-channel audio elsewhere in this project.
+  single-channel audio elsewhere in this project. If a session's wav/
+  directory has a pre-converted `<session_id>_16k_mono.wav` alongside the
+  original `<session_id>.flac`, that mono file is used directly instead
+  (its own single channel, not necessarily flac channel 0) -- preferred
+  since it's cheaper to read and, unlike the original multi-channel
+  wav/flac, is what a listener would use to spot-check a segment by ear.
 
 Each speaker's "utterances" are the individual (non-silence) intervals of
 its TextGrid tier, read directly out of the session's channel 0 via a
@@ -79,6 +85,20 @@ class SegmentRef(NamedTuple):
     end_sample: int
 
 
+# Tried in order for a TextGrid's session_id -- the pre-converted mono file
+# first (see module docstring), then the official release's own multi-channel
+# audio, whichever extension it was kept/converted as.
+_AUDIO_SUFFIXES = ("_16k_mono.wav", ".flac", ".wav")
+
+
+def _find_audio_path(wav_dir, session_id):
+    for suffix in _AUDIO_SUFFIXES:
+        candidate = wav_dir / f"{session_id}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _find_session_dirs(root):
     """Locates every (wav/, TextGrid/) directory pair under root, classifying
     each by its parent directory's name: anything starting with "train"
@@ -87,7 +107,11 @@ def _find_session_dirs(root):
     combined into one TRAIN split) contributes to TRAIN, and "test"
     contributes to TEST. Search is recursive rather than depth-assuming, for
     the same reason as TimitCorpus's _find_split_roots: real extracted
-    archives vary in nesting."""
+    archives vary in nesting.
+
+    Sessions are enumerated from TextGrid/*.TextGrid (not wav/*, which also
+    holds each session's sibling .rttm-adjacent audio under a *session id*,
+    not a fixed extension -- see _find_audio_path)."""
     sessions = {"TRAIN": {}, "TEST": {}}
     for wav_dir in Path(root).rglob("wav"):
         if not wav_dir.is_dir():
@@ -102,13 +126,15 @@ def _find_session_dirs(root):
             split = "TEST"
         else:
             continue
-        for wav_path in sorted(wav_dir.glob("*.wav")):
-            textgrid_path = textgrid_dir / f"{wav_path.stem}.TextGrid"
-            if textgrid_path.is_file():
-                sessions[split][wav_path.stem] = (wav_path, textgrid_path)
+        for textgrid_path in sorted(textgrid_dir.glob("*.TextGrid")):
+            session_id = textgrid_path.stem
+            wav_path = _find_audio_path(wav_dir, session_id)
+            if wav_path is not None:
+                sessions[split][session_id] = (wav_path, textgrid_path)
     if not sessions["TRAIN"] or not sessions["TEST"]:
         raise Aishell4NotAvailableError(
-            f"Could not locate any train_*/{{wav,TextGrid}} and test/{{wav,TextGrid}} directories under {root}"
+            f"Could not locate any train_*/{{wav,TextGrid}} and test/{{wav,TextGrid}} directories under {root} "
+            f"with a {{{', '.join(_AUDIO_SUFFIXES)}}} audio file per TextGrid"
         )
     return sessions
 
