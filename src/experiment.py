@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-import soundfile as sf
 
 from . import tracking
 from .config import ExperimentConfig
+from .data.aishell4 import Aishell4Corpus
 from .data.dataset import SegmentDataset, featurize_waveform
 from .data.lazy_features import LazyFeatures, expected_frame_count
 from .data.timit import TimitCorpus
@@ -49,6 +49,24 @@ def _featurize_split(corpus, split, transformation):
             features = featurize_waveform(waveform, transformation)
             utterances.append((features, label_map[speaker]))
     return utterances, label_map
+
+
+def _lazy_featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
+    """Lazy analogue of _featurize_train_dev_split (see its docstring) for a
+    corpus too large to eagerly featurize upfront -- currently AISHELL-4's
+    TRAIN split, whose per-speaker TextGrid-turn segments run far more
+    numerous than TIMIT's ~10 sentences/speaker."""
+    speakers = corpus.speakers("TRAIN")
+    label_map = {speaker: i for i, speaker in enumerate(speakers)}
+    train_utterances, dev_utterances = [], []
+    for speaker in speakers:
+        paths = sorted(corpus.utterance_paths("TRAIN", speaker))
+        for i, path in enumerate(paths):
+            length = expected_frame_count(corpus.raw_sample_count(path), transformation)
+            compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation)
+            target = dev_utterances if i < dev_holdout_per_speaker else train_utterances
+            target.append((LazyFeatures(compute_fn, length), label_map[speaker]))
+    return train_utterances, dev_utterances, label_map
 
 
 def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
@@ -105,13 +123,18 @@ def _lazy_featurize_split(corpus, split, transformation):
     """Like _featurize_split, but each utterance is a LazyFeatures instance
     (featurized on first access, not upfront) -- see src/data/voxceleb.py's
     module docstring for why VoxCeleb's ~148k training utterances can't be
-    eagerly loaded into memory the way TIMIT's ~5.5k can."""
+    eagerly loaded into memory the way TIMIT's ~5.5k can (AISHELL-4's
+    TextGrid-turn segments are similarly numerous, see src/data/aishell4.py).
+    corpus.raw_sample_count(path) supplies each entry's frame count without
+    featurizing it -- a cheap file-header probe for TIMIT/VoxCeleb's
+    plain-file paths, or no I/O at all for AISHELL-4's segment refs, which
+    already know their own sample count from the TextGrid times."""
     speakers = corpus.speakers(split)
     label_map = {speaker: i for i, speaker in enumerate(speakers)}
     utterances = []
     for speaker in speakers:
         for path in corpus.utterance_paths(split, speaker):
-            length = expected_frame_count(sf.info(str(path)).frames, transformation)
+            length = expected_frame_count(corpus.raw_sample_count(path), transformation)
             compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation)
             utterances.append((LazyFeatures(compute_fn, length), label_map[speaker]))
     return utterances, label_map
@@ -126,7 +149,7 @@ def _lazy_trial_utterances(corpus, transformation):
     utterances = []
     for relative_path in relative_paths:
         full_path = corpus.trial_utterance_path(relative_path)
-        length = expected_frame_count(sf.info(str(full_path)).frames, transformation)
+        length = expected_frame_count(corpus.raw_sample_count(full_path), transformation)
         compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, full_path, transformation)
         utterances.append((LazyFeatures(compute_fn, length), relative_path))
     return utterances
@@ -180,11 +203,11 @@ def run_experiment(config, corpus=None, strategies=None):
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
 
-    is_voxceleb = config.data.dataset.lower() == "voxceleb"
+    dataset_name = config.data.dataset.lower()
     transformation = config.transformation
     segment_length = config.data.segment_length(transformation)
 
-    if is_voxceleb:
+    if dataset_name == "voxceleb":
         # Neururer et al. 2024 explicitly omits the SC task for VoxCeleb
         # ("we omit SC results on VoxCeleb as experiments in Section 2 led
         # to similar conclusions") -- sc_utterances stays None throughout.
@@ -205,6 +228,30 @@ def run_experiment(config, corpus=None, strategies=None):
         # unique per-utterance path strings, not speaker ids, so every pair
         # would count as "different speaker").
         dev_eval_fn = sv_eval_fn
+    elif dataset_name == "aishell4":
+        # AISHELL-4 has a real per-speaker TRAIN/TEST split like TIMIT (not
+        # VoxCeleb's trial-pairs protocol) -- see src/data/aishell4.py's
+        # module docstring for what "speaker" and "TRAIN"/"TEST" mean here --
+        # so SV evaluation is the same exhaustive all-vs-all pairing TIMIT
+        # uses. Segment counts are far larger than TIMIT's, hence the lazy
+        # (LazyFeatures-based) featurization VoxCeleb also uses instead of
+        # TIMIT's eager one.
+        corpus = corpus or Aishell4Corpus(config)
+        train_utterances, dev_utterances, train_label_map = _lazy_featurize_train_dev_split(
+            corpus, transformation, config.evaluation.dev_holdout_per_speaker
+        )
+        sv_eval_utterances, _ = _lazy_featurize_split(corpus, "TEST", transformation)
+        # Neururer et al. 2024's SC recipe (2-vs-8 concatenated sentences per
+        # speaker) doesn't transfer to AISHELL-4's TextGrid-turn segments --
+        # counts/durations per (session, tier) speaker are too irregular for
+        # it to make sense -- so it's omitted here, the same way it's
+        # omitted for VoxCeleb.
+        sc_utterances = None
+        sv_eval_fn = equal_error_rate
+        # train()'s own default (trainer.py's equal_error_rate) is exactly
+        # this same function -- no need to route dev-eval through this
+        # module's reference, same as TIMIT.
+        dev_eval_fn = None
     else:
         corpus = corpus or TimitCorpus(config.data)
         train_utterances, dev_utterances, train_label_map = _featurize_train_dev_split(

@@ -1,0 +1,42 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
+
+data:
+  dataset: "AISHELL4"      # see src/README.md's "Running on AISHELL-4" section for the protocol this implies
+  segment_duration: 1.0
+
+aishell4:
+  # An already-extracted AISHELL-4 (openslr.org/111) directory tree,
+  # containing train_S/, train_M/ and/or train_L/, plus test/, each with
+  # wav/ and TextGrid/ subdirectories. This project doesn't auto-download
+  # it -- see src/data/aishell4.py's module docstring.
+  root: "~/.cache/datasets/aishell4"
+
+model:
+  type: "RNN"
+
+# transformation defaults (mel, hann window) already match context/src's
+# DeepVoice front-end, which the RNN (like the CNN) uses -- no overrides needed.
+
+rnn:
+  hidden_size: 512          # per-direction BiLSTM hidden size (context/src/models/backend/LSTM.py)
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  num_epochs: 128
+  batch_size: 100
+  # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
+  # nodes) -- /scratch is wiped at job termination, so it can't hold resume
+  # state across a requeue.
+  checkpoint_every_epochs: 1
+  early_stopping_patience: 10
+  early_stopping_min_improvement_rate: 0.03
+
+wandb:
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

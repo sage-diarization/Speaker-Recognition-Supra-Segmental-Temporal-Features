@@ -38,9 +38,10 @@ class TransformationConfig:
 
 @dataclass
 class DataConfig:
-    # "TIMIT" (default) or "VoxCeleb" -- selects the corpus + evaluation task
-    # set in src/experiment.py, and is folded into wandb run names/tags so
-    # runs from different datasets are distinguishable at a glance.
+    # "TIMIT" (default), "VoxCeleb", or "AISHELL4" -- selects the corpus +
+    # evaluation task set in src/experiment.py, and is folded into wandb run
+    # names/tags so runs from different datasets are distinguishable at a
+    # glance.
     dataset: str = "TIMIT"
     segment_duration: float = 1.0
     timit_root: str = ""
@@ -69,6 +70,18 @@ class VoxCelebConfig:
     # (default: the cleaned original 40-held-out-speaker list). Passed
     # straight through to VoxCeleb1Verification's meta_url.
     trial_meta_url: str = "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+
+
+@dataclass
+class Aishell4Config:
+    """Local, already-extracted AISHELL-4 (openslr.org/111) directory tree
+    (see src/data/aishell4.py's module docstring). Unlike TIMIT, AISHELL-4
+    itself is freely downloadable with no license agreement, but this
+    project doesn't auto-fetch it (its archives are multi-gigabyte 8-channel
+    audio) -- point `root` (or the AISHELL4_ROOT env var) at wherever you've
+    already extracted it."""
+
+    root: str = ""
 
 
 @dataclass
@@ -198,6 +211,7 @@ class ExperimentConfig:
     transformation: TransformationConfig = field(default_factory=TransformationConfig)
     data: DataConfig = field(default_factory=DataConfig)
     voxceleb: VoxCelebConfig = field(default_factory=VoxCelebConfig)
+    aishell4: Aishell4Config = field(default_factory=Aishell4Config)
     model: ModelConfig = field(default_factory=ModelConfig)
     conformer: ConformerConfig = field(default_factory=ConformerConfig)
     rnn: RNNConfig = field(default_factory=RNNConfig)
@@ -227,6 +241,7 @@ class ExperimentConfig:
             ("transformation", TransformationConfig),
             ("data", DataConfig),
             ("voxceleb", VoxCelebConfig),
+            ("aishell4", Aishell4Config),
             ("model", ModelConfig),
             ("conformer", ConformerConfig),
             ("rnn", RNNConfig),

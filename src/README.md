@@ -50,10 +50,12 @@ reports speaker verification EER and speaker clustering MR as mean/SD over
 those runs in a 3x3 grid (reproducing the structure and mean/SD reporting of
 the paper's Tables 1/2, not the exact numbers — the original list-file
 splits for dev/final partitions aren't recoverable from the reference repo).
-On VoxCeleb (`data.dataset: "VoxCeleb"`, see "Running on VoxCeleb" below),
+On VoxCeleb (`data.dataset: "VoxCeleb"`, see "Running on VoxCeleb" below) and
+AISHELL-4 (`data.dataset: "AISHELL4"`, see "Running on AISHELL-4" below),
 only SV/EER is reported, matching the paper's Table 3 and its stated reason
-for omitting SC there ("experiments in Section 2 led to similar
-conclusions" for both tasks).
+for omitting SC on VoxCeleb ("experiments in Section 2 led to similar
+conclusions" for both tasks) — extended here to AISHELL-4 for the same
+reason (see "Running on AISHELL-4" below).
 
 Each run evaluates dev-set SV EER after *every* epoch and keeps the
 best-scoring checkpoint's weights, matching `context/src`'s `EvalCallback` +
@@ -156,18 +158,71 @@ both handled automatically but worth knowing about:
   exists as an unused config hook if this proves impractical in practice and
   a cap is wanted.
 
+## Running on AISHELL-4
+
+Set `data.dataset: "AISHELL4"` (see `configs/cnn-aishell4.yaml`) to run
+against AISHELL-4 (Fu et al. 2021, `openslr.org/111`) instead of TIMIT.
+Unlike TIMIT, AISHELL-4 itself is freely downloadable with no license
+agreement -- but this project doesn't auto-fetch it (its archives are
+multi-gigabyte 8-channel meeting recordings). Download and extract it
+yourself, then point `aishell4.root` (or the `AISHELL4_ROOT` env var) at the
+result -- a directory containing `train_S/`, `train_M/` and/or `train_L/`
+(AISHELL-4's three subsets, split by recording-room size; however many of
+these your copy has are combined into one TRAIN split), plus `test/`, each
+with `wav/` and `TextGrid/` subdirectories.
+
+**AISHELL-4 isn't shaped like TIMIT/VoxCeleb**, and this project's
+adaptation of it is a deliberate simplification worth understanding before
+comparing numbers across datasets -- see `src/data/aishell4.py`'s module
+docstring for the full detail. In short:
+
+- AISHELL-4 ships long multi-speaker meeting recordings (one 8-channel
+  `.wav` per session) plus a per-session `TextGrid` annotating who spoke
+  when, not pre-segmented per-speaker utterance files. Each speaker's
+  "utterances" are the individual non-silence intervals of its TextGrid
+  tier, sliced directly out of the session's first audio channel (no
+  beamforming) by sample offset -- no separate segment files are ever
+  written to disk.
+- AISHELL-4's TextGrid tiers are speaker labels *local to their own
+  session* -- there's no corpus-wide speaker-ID metadata linking sessions to
+  real identities. "Speaker" is therefore defined as `(session_id,
+  tier_name)`, and train/test speaker-disjointness comes for free from
+  AISHELL-4's own `train_*/` vs `test/` session split (the same real,
+  per-speaker TRAIN/TEST structure TIMIT has, unlike VoxCeleb's trial-pairs
+  protocol), so SV evaluation is TIMIT's exhaustive all-vs-all pairing, not
+  a trial list.
+- SC is omitted, the same way it's omitted for VoxCeleb: Neururer et al.
+  2024's "2 vs 8 concatenated sentences per speaker" SC recipe doesn't
+  transfer to AISHELL-4's TextGrid-turn segments, whose count/duration per
+  speaker is far more irregular than TIMIT's uniform ~10 sentences.
+- Segment counts run much higher than TIMIT's ~5,500 utterances, so, like
+  VoxCeleb, training/TEST utterances are handled via
+  `src/data/lazy_features.py`'s `LazyFeatures` rather than featurized
+  eagerly upfront.
+
+Parsing the TextGrid annotations uses the
+[`praatio`](https://github.com/timmahrt/praatIO) library (see
+`requirements.txt`) rather than a hand-rolled parser, per this project's
+existing preference for standardized libraries over custom fetchers/parsers
+(the same reasoning `src/data/voxceleb.py`'s module docstring gives for
+using torchaudio's own VoxCeleb downloader).
+
 ## Running the experiment
 
 ```
 pip install -r requirements.txt
-python -m src.experiment --config configs/cnn_timit.yaml         # CNN backend on TIMIT
-python -m src.experiment --config configs/rnn_timit.yaml         # RNN backend on TIMIT
-python -m src.experiment --config configs/resnet_timit.yaml      # ResNet backend on TIMIT
-python -m src.experiment --config configs/conformer_timit.yaml   # Conformer backend on TIMIT
-python -m src.experiment --config configs/cnn_voxceleb.yaml      # CNN backend on VoxCeleb
-python -m src.experiment --config configs/rnn_voxceleb.yaml      # RNN backend on VoxCeleb
-python -m src.experiment --config configs/resnet_voxceleb.yaml   # ResNet backend on VoxCeleb
-python -m src.experiment --config configs/conformer_voxceleb.yaml   # Conformer backend on VoxCeleb
+python -m src.experiment --config configs/cnn-timit.yaml         # CNN backend on TIMIT
+python -m src.experiment --config configs/rnn-timit.yaml         # RNN backend on TIMIT
+python -m src.experiment --config configs/resnet-timit.yaml      # ResNet backend on TIMIT
+python -m src.experiment --config configs/conformer-timit.yaml   # Conformer backend on TIMIT
+python -m src.experiment --config configs/cnn-voxceleb.yaml      # CNN backend on VoxCeleb
+python -m src.experiment --config configs/rnn-voxceleb.yaml      # RNN backend on VoxCeleb
+python -m src.experiment --config configs/resnet-voxceleb.yaml   # ResNet backend on VoxCeleb
+python -m src.experiment --config configs/conformer-voxceleb.yaml   # Conformer backend on VoxCeleb
+python -m src.experiment --config configs/cnn-aishell4.yaml      # CNN backend on AISHELL-4
+python -m src.experiment --config configs/rnn-aishell4.yaml      # RNN backend on AISHELL-4
+python -m src.experiment --config configs/resnet-aishell4.yaml   # ResNet backend on AISHELL-4
+python -m src.experiment --config configs/conformer-aishell4.yaml   # Conformer backend on AISHELL-4
 ```
 
 `device: "auto"` (the default, see `configs/cnn_timit.yaml`) picks the best

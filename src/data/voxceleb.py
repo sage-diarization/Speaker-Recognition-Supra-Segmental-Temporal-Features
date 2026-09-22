@@ -69,6 +69,10 @@ class VoxCelebCorpus:
         return self._wav_root / relative_path
 
     @staticmethod
+    def raw_sample_count(path):
+        return sf.info(str(path)).frames
+
+    @staticmethod
     def load_waveform(path):
         waveform, sample_rate = sf.read(str(path), dtype="float32")
         return waveform, sample_rate

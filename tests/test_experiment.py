@@ -8,8 +8,10 @@ import soundfile as sf
 
 from src import experiment as experiment_module
 from src.config import ExperimentConfig
+from src.data.aishell4 import Aishell4Corpus
 from src.experiment import RunStatistics, STRATEGIES, build_sc_utterances, format_results, run_experiment
 from tests.conftest import make_synthetic_waveform
+from tests.test_aishell4 import _write_session
 
 
 class _StubCorpus:
@@ -88,11 +90,37 @@ def _make_voxceleb_stub_corpus(tmp_path, num_speakers=3, utterances_per_speaker=
             return trial_paths[relative_path]
 
         @staticmethod
+        def raw_sample_count(path):
+            return sf.info(str(path)).frames
+
+        @staticmethod
         def load_waveform(path):
             waveform, sample_rate = sf.read(str(path), dtype="float32")
             return waveform, sample_rate
 
     return _VoxCelebStubCorpus()
+
+
+def _make_aishell4_corpus(tmp_path, num_speakers=3, utterances_per_speaker=4, duration_s=2.0):
+    """Builds a real (tiny, on-disk) AISHELL-4-shaped directory tree --
+    train_S/{wav,TextGrid} and test/{wav,TextGrid}, one session per speaker
+    -- and constructs a real Aishell4Corpus from it, so run_experiment's
+    AISHELL4 path is exercised against the actual TextGrid-segment-slicing
+    code (src/data/aishell4.py), not a hand-rolled stub."""
+    root = tmp_path / "aishell4_stub"
+    gap_s = 0.5
+    for split_dir_name in ("train_S", "test"):
+        for speaker in range(num_speakers):
+            session_id = f"{split_dir_name}_sess{speaker}"
+            intervals, t = [], 0.0
+            for i in range(utterances_per_speaker):
+                intervals.append((t, t + duration_s, f"utt{i}"))
+                t += duration_s + gap_s
+            _write_session(root / split_dir_name, session_id, {"SPK0": intervals}, duration_s=t)
+
+    config = ExperimentConfig()
+    config.aishell4.root = str(root)
+    return Aishell4Corpus(config)
 
 
 def test_build_sc_utterances_splits_short_and_long_per_speaker():
@@ -603,3 +631,57 @@ def test_run_experiment_voxceleb_wandb_tags_and_name_identify_the_dataset(monkey
     assert names == ["CNN-voxceleb-OS", "CNN-voxceleb-SS", "CNN-voxceleb-SU"]
     for _, tags in captured:
         assert "voxceleb" in tags
+
+
+def test_run_experiment_aishell4_end_to_end_skips_sc_and_uses_exhaustive_eval(tmp_path):
+    # AISHELL-4 has a real per-(session, TextGrid-tier) speaker TRAIN/TEST
+    # split (like TIMIT), not VoxCeleb's trial-pairs protocol -- SV should be
+    # the same exhaustive all-vs-all pairing TIMIT's SV task uses. SC is
+    # omitted (see run_experiment's AISHELL4 branch), same as VoxCeleb.
+    config = ExperimentConfig()
+    config.data.dataset = "AISHELL4"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+
+    corpus = _make_aishell4_corpus(tmp_path)
+    results = run_experiment(config, corpus=corpus)
+
+    assert set(results.keys()) == {"SV", "SV_paper_comparable"}
+    for train_strategy in STRATEGIES:
+        for test_strategy in STRATEGIES:
+            stats = results["SV"][(train_strategy, test_strategy)]
+            assert isinstance(stats, RunStatistics)
+            assert 0.0 <= stats.mean <= 1.0
+
+    report = format_results(results)
+    assert "SV (EER)" in report
+    assert "SC (MR)" not in report
+
+
+def test_run_experiment_aishell4_wandb_tags_and_name_identify_the_dataset(monkeypatch, tmp_path):
+    captured = []
+    real_start_run = experiment_module.tracking.start_run
+
+    def _spy_start_run(wandb_config, name, tags, run_config, run_id=None):
+        captured.append((name, tags))
+        return real_start_run(wandb_config, name, tags, run_config, run_id=run_id)
+
+    monkeypatch.setattr(experiment_module.tracking, "start_run", _spy_start_run)
+
+    config = ExperimentConfig()
+    config.data.dataset = "AISHELL4"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+    config.training.checkpoint_dir = str(tmp_path / "checkpoints")
+
+    corpus = _make_aishell4_corpus(tmp_path)
+    run_experiment(config, corpus=corpus)
+
+    names = [name for name, _ in captured]
+    assert names == ["CNN-aishell4-OS", "CNN-aishell4-SS", "CNN-aishell4-SU"]
+    for _, tags in captured:
+        assert "aishell4" in tags
