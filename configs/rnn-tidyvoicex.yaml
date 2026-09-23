@@ -9,7 +9,7 @@ tidyvoicex:
   # An already-extracted TidyVoiceX_ASV (Mozilla Data Collective) tree,
   # searched for its *_Train/ and *_Dev/ directories -- not auto-downloaded,
   # see src/data/tidyvoicex.py's module docstring.
-  root: "~/.cache/datasets/tidyx"
+  root: "~/.cache/datasets/tidyvoicex"
   # The Dev trial list ships separately (tidyvoice_trials.zip); "" searches
   # root for TidyVocieX_Dev_trialPairs.txt (sic). Absolute or root-relative.
   trial_file: ""
