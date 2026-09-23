@@ -1,0 +1,79 @@
+#!/bin/bash
+#SBATCH --time=1440
+#SBATCH --job-name=sst/voxceleb1-download
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=2
+#SBATCH --account=cai_cv
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+# Prepares VoxCeleb1 (dev + test) for voxceleb.root (configs/*-voxceleb.yaml)
+# from huggingface.co/datasets/Acouspike/Voxceleb1: downloads its archive
+# (VoxCeleb1_archive.tar.gz.part-*, ~66 GB -- a single split tar.gz, so every
+# part is needed), extracts only its 16 kHz WAV audio (vox1/wav/) into
+# <TARGET_DIR>/wav/ -- the layout torchaudio's VoxCeleb1Verification expects,
+# so it skips its own download -- and removes everything else. The trial
+# lists are still fetched by torchaudio on first use. Peak disk use is ~100 GB.
+#
+# Restartable: resubmit after a timeout. Finished downloads and the
+# extraction are skipped.
+#
+# Usage: sbatch slurm/voxceleb1-download.submit [TARGET_DIR]
+# (default ~/.cache/datasets/voxceleb). The repo isn't gated, but setting
+# `export HF_TOKEN=...` in slurm/secrets.submit gives much faster downloads.
+
+source slurm/download-install.submit
+source slurm/secrets.submit
+set -euo pipefail
+
+ROOT="${1:-$HOME/.cache/datasets/voxceleb}"
+DOWNLOAD="$ROOT/download"
+EXPECTED_SPEAKERS=1251      # VoxCeleb1 dev (1,211) + test (40)
+EXPECTED_UTTERANCES=153516  # 148,642 + 4,874
+mkdir -p "$ROOT"
+
+count_speakers() { find "$ROOT/wav" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
+count_utterances() { find "$ROOT/wav" -name '*.wav' 2>/dev/null | wc -l; }
+
+if [ -f "$ROOT/.complete" ]; then
+  echo "$ROOT is already complete."
+  exit 0
+fi
+if [ ! -f "$ROOT/.extracted" ] && [ "$(count_utterances)" -eq "$EXPECTED_UTTERANCES" ]; then
+  echo "$ROOT/wav already holds all of VoxCeleb1 (e.g. from torchaudio's own download) -- nothing to do."
+  touch "$ROOT/.complete"
+  exit 0
+fi
+[ -n "${HF_TOKEN:-}" ] && export HF_TOKEN
+
+if [ ! -f "$ROOT/.extracted" ]; then
+  echo "Downloading..."
+  hf download Acouspike/Voxceleb1 $(printf 'VoxCeleb1_archive.tar.gz.part-%03d ' $(seq 0 6)) \
+    --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 7
+
+  echo "Extracting..."
+  cat "$DOWNLOAD"/VoxCeleb1_archive.tar.gz.part-* |
+    tar -xzf - -C "$ROOT" --strip-components=1 --wildcards 'vox1/wav/*'
+  touch "$ROOT/.extracted"
+  rm -f "$DOWNLOAD"/VoxCeleb1_archive.tar.gz.part-*
+fi
+
+echo "Verifying..."
+num_speakers=$(count_speakers)
+num_utterances=$(count_utterances)
+echo "$num_speakers speakers (expected $EXPECTED_SPEAKERS), $num_utterances utterances (expected $EXPECTED_UTTERANCES)"
+if [ "$num_speakers" -ne "$EXPECTED_SPEAKERS" ] || [ "$num_utterances" -ne "$EXPECTED_UTTERANCES" ]; then
+  echo "Unexpected VoxCeleb1 size -- not cleaning up." >&2
+  exit 1
+fi
+
+echo "Cleaning up..."
+# Only what this job created: the download folder and anything but audio
+# under wav/ -- the rest of ROOT (e.g. torchaudio's cached trial lists) stays.
+rm -rf "$DOWNLOAD"
+find "$ROOT/wav" -type f ! -name '*.wav' -delete
+find "$ROOT/wav" -mindepth 1 -type d -empty -delete
+touch "$ROOT/.complete"
+
+echo "Done: voxceleb.root is $ROOT"

@@ -1,0 +1,121 @@
+#!/bin/bash
+#SBATCH --time=1440
+#SBATCH --job-name=sst/voxceleb2-download
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=16
+#SBATCH --account=cai_cv
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+# Prepares VoxCeleb2 dev for voxceleb.vox2_root (configs/*-voxceleb.yaml):
+# downloads only the audio archive (aac.7z.*, ~74 GB) and the speaker list
+# (vox2_meta.csv) from huggingface.co/datasets/Reverb/voxceleb2 -- not the
+# mp4 videos or transcripts -- extracts it, removes the test speakers
+# (VoxCeleb2 dev = 5,994 speakers), converts every .m4a to 16 kHz mono WAV
+# and removes everything else. Peak disk use is ~300 GB.
+#
+# Restartable: resubmit after a timeout. Finished downloads, the extraction
+# and already converted files are skipped.
+#
+# Usage: sbatch slurm/voxceleb2-download.submit [TARGET_DIR]
+# (default ~/.cache/datasets/voxceleb2). The repo isn't gated, but setting
+# `export HF_TOKEN=...` in slurm/secrets.submit gives much faster downloads.
+
+source slurm/download-install.submit
+source slurm/secrets.submit
+set -euo pipefail
+
+ROOT="${1:-$HOME/.cache/datasets/voxceleb2}"
+DOWNLOAD="$ROOT/download"
+CPUS="${SLURM_CPUS_PER_TASK:-$(nproc)}"
+mkdir -p "$ROOT"
+
+if [ -f "$ROOT/.complete" ]; then
+  echo "$ROOT is already complete."
+  exit 0
+fi
+[ -n "${HF_TOKEN:-}" ] && export HF_TOKEN
+
+SEVEN_ZIP="$(command -v 7zz || command -v 7z || command -v 7za || true)"
+[ -n "$SEVEN_ZIP" ] || pip3 install -q py7zr multivolumefile
+FFMPEG="$(command -v ffmpeg || true)"
+if [ -z "$FFMPEG" ]; then
+  pip3 install -q imageio-ffmpeg
+  FFMPEG="$(python3 -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+fi
+
+if [ ! -f "$ROOT/.extracted" ]; then
+  echo "Downloading..."
+  # Explicit file names: an --include pattern would first list the whole
+  # repo, including its ~1M transcript files.
+  hf download Reverb/voxceleb2 vox2_meta.csv $(printf 'aac.7z.%03d ' $(seq 1 15)) \
+    --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 8
+
+  echo "Extracting..."
+  if [ -n "$SEVEN_ZIP" ]; then
+    "$SEVEN_ZIP" x -y -mmt="$CPUS" -o"$ROOT" "$DOWNLOAD/aac.7z.001"
+  else
+    python3 - "$DOWNLOAD/aac.7z" "$ROOT" <<'EOF'
+import sys
+
+import multivolumefile
+import py7zr
+
+with multivolumefile.open(sys.argv[1], mode="rb") as volumes, py7zr.SevenZipFile(volumes, "r") as archive:
+    archive.extractall(path=sys.argv[2])
+EOF
+  fi
+  touch "$ROOT/.extracted"
+  rm -f "$DOWNLOAD"/aac.7z.*
+fi
+
+echo "Removing test speakers..."
+awk -F, 'NR > 1 { gsub(/[ \r]/, ""); print $1, $4 }' "$DOWNLOAD/vox2_meta.csv" > "$DOWNLOAD/speaker_sets.txt"
+awk '$2 == "test" { print $1 }' "$DOWNLOAD/speaker_sets.txt" > "$DOWNLOAD/test_speakers.txt"
+find "$ROOT" -mindepth 1 -type d -name 'id[0-9][0-9][0-9][0-9][0-9]' -not -path "$DOWNLOAD/*" -prune -print0 |
+  while IFS= read -r -d '' speaker_dir; do
+    if grep -qFx "$(basename "$speaker_dir")" "$DOWNLOAD/test_speakers.txt"; then
+      rm -rf "$speaker_dir"
+    fi
+  done
+
+echo "Converting to WAV with $CPUS processes..."
+# In place, deleting each .m4a once converted. Written as .part first and
+# renamed when complete, so an interrupted conversion never leaves a
+# truncated .wav behind.
+find "$ROOT" -name '*.m4a' -print0 | xargs -0 -r -P "$CPUS" -n 100 sh -c '
+  rc=0
+  for in_file; do
+    out="${in_file%.m4a}.wav"
+    if [ ! -f "$out" ]; then
+      if "$0" -nostdin -loglevel error -y -i "$in_file" -ac 1 -ar 16000 -c:a pcm_s16le -f wav "$out.part"; then
+        mv "$out.part" "$out"
+      else
+        echo "failed: $in_file" >&2
+        rc=1
+        continue
+      fi
+    fi
+    rm -f "$in_file"
+  done
+  exit $rc
+' "$FFMPEG"
+
+echo "Verifying..."
+num_speakers=$(find "$ROOT" -mindepth 1 -type d -name 'id[0-9][0-9][0-9][0-9][0-9]' -not -path "$DOWNLOAD/*" -prune | wc -l)
+num_expected=$(awk '$2 == "dev"' "$DOWNLOAD/speaker_sets.txt" | wc -l)
+num_utterances=$(find "$ROOT" -name '*.wav' | wc -l)
+echo "$num_speakers speakers (expected $num_expected), $num_utterances utterances (VoxCeleb2 dev: 1092009)"
+if [ "$num_speakers" -ne "$num_expected" ]; then
+  echo "Unexpected speaker count -- not cleaning up." >&2
+  exit 1
+fi
+
+echo "Cleaning up..."
+rm -rf "$DOWNLOAD"
+find "$ROOT" -type f ! -name '*.wav' ! -name '.extracted' -delete
+find "$ROOT" -mindepth 1 -type d -empty -delete
+touch "$ROOT/.complete"
+
+echo "Done: set voxceleb.vox2_root to $ROOT"
