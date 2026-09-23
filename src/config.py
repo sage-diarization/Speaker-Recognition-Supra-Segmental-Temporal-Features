@@ -202,6 +202,11 @@ class EvaluationConfig:
     segment_draw: str = "OS"
     sv_max_sentences: int = 0
     sc_num_speakers: int = 40
+    # TIMIT only: explicit SC speaker ids (overrides sc_num_speakers). Left
+    # empty, the first sc_num_speakers sorted ids are used, which on real
+    # TIMIT are all female -- the TIMIT configs therefore set the paper's
+    # 40-speaker list (see src/experiment.py's build_sc_utterances).
+    sc_speakers: list = field(default_factory=list)
     # TIMIT only: this many of each TRAIN speaker's utterances (deterministically,
     # the first dev_holdout_per_speaker sorted paths) are held out from gradient
     # training and used instead for periodic dev-EER checkpoint selection, so

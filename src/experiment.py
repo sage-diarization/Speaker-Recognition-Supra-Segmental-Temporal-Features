@@ -99,22 +99,37 @@ def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
     return train_utterances, dev_utterances, label_map
 
 
-def build_sc_utterances(corpus, split, transformation, num_speakers):
+def build_sc_utterances(corpus, split, transformation, num_speakers, speaker_ids=None):
     """Builds the SC task's per-speaker utterances by concatenating sentences
     rather than using single raw sentences, per Neururer et al. 2024 Section
     2.2: "2 utterances (comprising 2 and 8 concatenated sentences) per 40
     speakers". Sentences are sorted deterministically (not left in TIMIT's
     filesystem-extraction order, which is arbitrary per speaker) before being
-    split into a short (first 2) and long (remaining) concatenation; for
-    standard TIMIT's 10-sentences-per-speaker layout this reproduces the
-    paper's 2-vs-8 split (the original speaker-list files that pick the 40
-    speakers themselves aren't recoverable from context/src, so we take the
-    first num_speakers sorted by speaker id instead)."""
-    speakers = corpus.speakers(split)[:num_speakers]
+    split into a long (all but the last 2) and short (last 2) concatenation,
+    matching the SC data prep of the paper's reference [13]
+    (github.com/stdm/ZHAW_deep_voice, common/spectrogram/speaker_train_splitter.py:
+    the last 20% of each speaker's files form the second utterance). Taking
+    the *first* 2 sorted files instead would make every speaker's short
+    utterance TIMIT's SA1+SA2 -- the two dialect sentences all speakers read
+    with identical text.
+
+    speaker_ids selects the speakers explicitly (see
+    EvaluationConfig.sc_speakers); otherwise the first num_speakers sorted by
+    speaker id are used -- on real TIMIT that's 40 female speakers only
+    (female ids start with "F"), a much harder, non-paper SC set."""
+    if speaker_ids:
+        # Case-insensitive: TIMIT copies differ in speaker-directory case.
+        available = {speaker.upper(): speaker for speaker in corpus.speakers(split)}
+        missing = [speaker for speaker in speaker_ids if speaker.upper() not in available]
+        if missing:
+            raise ValueError(f"SC speakers not found in {split} split: {missing}")
+        speakers = [available[speaker.upper()] for speaker in speaker_ids]
+    else:
+        speakers = corpus.speakers(split)[:num_speakers]
     utterances = []
     for label, speaker in enumerate(speakers):
         paths = sorted(corpus.utterance_paths(split, speaker))
-        for group in (paths[:2], paths[2:]):
+        for group in (paths[:-2], paths[-2:]):
             waveform = np.concatenate([corpus.load_waveform(path)[0] for path in group])
             features = featurize_waveform(waveform, transformation)
             utterances.append((features, label))
@@ -356,7 +371,9 @@ def run_experiment(config, corpus=None, strategies=None):
             corpus, transformation, config.evaluation.dev_holdout_per_speaker
         )
         sv_eval_utterances, _ = _featurize_split(corpus, "TEST", transformation)
-        sc_utterances = build_sc_utterances(corpus, "TEST", transformation, config.evaluation.sc_num_speakers)
+        sc_utterances = build_sc_utterances(
+            corpus, "TEST", transformation, config.evaluation.sc_num_speakers, config.evaluation.sc_speakers
+        )
         sv_eval_fn = equal_error_rate
         # train()'s own default (trainer.py's equal_error_rate) is exactly
         # this same function -- no need to route dev-eval through this

@@ -3,11 +3,13 @@ import json
 import statistics
 from pathlib import Path
 
+import numpy as np
 import pytest
 import soundfile as sf
 
 from src import experiment as experiment_module
 from src.config import ExperimentConfig
+from src.data.dataset import featurize_waveform
 from src.data.aishell4 import Aishell4Corpus
 from src.data.tidyvoicex import TidyVoiceXCorpus
 from src.experiment import RunStatistics, STRATEGIES, build_sc_utterances, format_results, run_experiment
@@ -151,6 +153,37 @@ def test_build_sc_utterances_splits_short_and_long_per_speaker():
     for lengths in lengths_by_speaker.values():
         assert len(lengths) == 2
         assert min(lengths) < max(lengths)  # short (2 sentences) vs. long (remaining 3)
+
+
+def test_build_sc_utterances_short_utterance_is_last_two_sorted_sentences():
+    # TIMIT sorts SA1, SA2 (identical text for every speaker) first -- the
+    # short utterance must be the last 2 sorted sentences, not SA1+SA2.
+    durations = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9]
+    waveforms = {"TEST": {"SPK0": [make_synthetic_waveform(200, d, 16000, seed=i) for i, d in enumerate(durations)]}}
+    corpus = _StubCorpus(waveforms)
+    transformation = ExperimentConfig().transformation
+
+    long_utterance, short_utterance = [f for f, _ in build_sc_utterances(corpus, "TEST", transformation, num_speakers=1)]
+
+    expected_short = featurize_waveform(np.concatenate(waveforms["TEST"]["SPK0"][-2:]), transformation)
+    expected_long = featurize_waveform(np.concatenate(waveforms["TEST"]["SPK0"][:-2]), transformation)
+    np.testing.assert_allclose(short_utterance, expected_short)
+    np.testing.assert_allclose(long_utterance, expected_long)
+
+
+def test_build_sc_utterances_uses_explicit_speaker_ids_case_insensitively():
+    waveforms = {"TEST": {}}
+    for speaker_id in ("fabc0", "fdef0", "mabc0"):
+        waveforms["TEST"][speaker_id] = [make_synthetic_waveform(200, 1.0, 16000, seed=i) for i in range(4)]
+    corpus = _StubCorpus(waveforms)
+    transformation = ExperimentConfig().transformation
+
+    utterances = build_sc_utterances(corpus, "TEST", transformation, num_speakers=2, speaker_ids=["MABC0", "FDEF0"])
+    assert len(utterances) == 4
+    assert [label for _, label in utterances] == [0, 0, 1, 1]
+
+    with pytest.raises(ValueError, match="MXYZ0"):
+        build_sc_utterances(corpus, "TEST", transformation, num_speakers=2, speaker_ids=["MABC0", "MXYZ0"])
 
 
 def test_featurize_train_dev_split_holds_out_configured_utterances_per_speaker():

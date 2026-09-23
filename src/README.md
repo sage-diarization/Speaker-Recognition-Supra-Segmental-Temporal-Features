@@ -49,7 +49,9 @@ three test-time strategies. On TIMIT (`data.dataset: "TIMIT"`, the default),
 reports speaker verification EER and speaker clustering MR as mean/SD over
 those runs in a 3x3 grid (reproducing the structure and mean/SD reporting of
 the paper's Tables 1/2, not the exact numbers — the original list-file
-splits for dev/final partitions aren't recoverable from the reference repo).
+splits for dev/final partitions aren't recoverable from the reference repo;
+the SC speaker list is, from the paper's reference [13] -- see
+`evaluation.sc_speakers` in the TIMIT configs).
 On VoxCeleb (`data.dataset: "VoxCeleb"`, see "Running on VoxCeleb" below),
 AISHELL-4 (`data.dataset: "AISHELL4"`, see "Running on AISHELL-4" below) and
 TidyVoiceX (`data.dataset: "TidyVoiceX"`, see "Running on TidyVoiceX" below),
