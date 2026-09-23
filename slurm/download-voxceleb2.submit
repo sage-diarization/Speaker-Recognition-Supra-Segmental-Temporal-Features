@@ -4,6 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
+#SBATCH --mem=12G
 #SBATCH --account=cai_cv
 #SBATCH --partition=cpu
 #SBATCH --output=logs/%j_%N.out
@@ -19,7 +20,7 @@
 # Restartable: resubmit after a timeout. Finished downloads, the extraction
 # and already converted files are skipped.
 #
-# Usage: sbatch slurm/voxceleb2-download.submit [TARGET_DIR]
+# Usage: sbatch slurm/download-voxceleb2.submit [TARGET_DIR]
 # (default ~/.cache/datasets/voxceleb2). The repo isn't gated, but setting
 # `export HF_TOKEN=...` in slurm/secrets.submit gives much faster downloads.
 
@@ -37,6 +38,9 @@ if [ -f "$ROOT/.complete" ]; then
   exit 0
 fi
 [ -n "${HF_TOKEN:-}" ] && export HF_TOKEN
+# Plain HTTPS streaming to disk: the default hf_xet backend buffers chunks
+# in memory and got the download OOM-killed on the cluster.
+export HF_HUB_DISABLE_XET=1
 
 SEVEN_ZIP="$(command -v 7zz || command -v 7z || command -v 7za || true)"
 [ -n "$SEVEN_ZIP" ] || pip3 install -q py7zr multivolumefile
@@ -51,7 +55,7 @@ if [ ! -f "$ROOT/.extracted" ]; then
   # Explicit file names: an --include pattern would first list the whole
   # repo, including its ~1M transcript files.
   hf download Reverb/voxceleb2 vox2_meta.csv $(printf 'aac.7z.%03d ' $(seq 1 15)) \
-    --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 8
+    --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 6
 
   echo "Extracting..."
   if [ -n "$SEVEN_ZIP" ]; then

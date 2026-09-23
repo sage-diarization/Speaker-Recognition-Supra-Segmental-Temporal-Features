@@ -4,6 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
 #SBATCH --account=cai_cv
 #SBATCH --partition=cpu
 #SBATCH --output=logs/%j_%N.out
@@ -20,7 +21,7 @@
 # Restartable: resubmit after a timeout. Finished downloads and the
 # extraction are skipped.
 #
-# Usage: sbatch slurm/voxceleb1-download.submit [TARGET_DIR]
+# Usage: sbatch slurm/download-voxceleb1.submit [TARGET_DIR]
 # (default ~/.cache/datasets/voxceleb1). The repo isn't gated, but setting
 # `export HF_TOKEN=...` in slurm/secrets.submit gives much faster downloads.
 
@@ -47,11 +48,14 @@ if [ ! -f "$ROOT/.extracted" ] && [ "$(count_utterances)" -eq "$EXPECTED_UTTERAN
   exit 0
 fi
 [ -n "${HF_TOKEN:-}" ] && export HF_TOKEN
+# Plain HTTPS streaming to disk: the default hf_xet backend buffers chunks
+# in memory and got the download OOM-killed on the cluster.
+export HF_HUB_DISABLE_XET=1
 
 if [ ! -f "$ROOT/.extracted" ]; then
   echo "Downloading..."
   hf download Acouspike/Voxceleb1 $(printf 'VoxCeleb1_archive.tar.gz.part-%03d ' $(seq 0 6)) \
-    --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 7
+    --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 4
 
   echo "Extracting..."
   cat "$DOWNLOAD"/VoxCeleb1_archive.tar.gz.part-* |
