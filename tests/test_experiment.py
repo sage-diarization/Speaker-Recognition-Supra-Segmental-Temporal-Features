@@ -239,6 +239,42 @@ def test_run_experiment_dev_checkpoint_selection_excludes_test_split(monkeypatch
     assert captured_dev_utterance_counts == [4]  # 2 held-out utterances x 2 TRAIN speakers, not TEST's 6
 
 
+def test_run_experiment_dev_speakers_select_on_test_speakers_and_train_on_all_of_train(monkeypatch):
+    # evaluation.dev_speakers (the TIMIT configs' standard 50-speaker dev set):
+    # checkpoint selection uses all TEST utterances of those speakers, matched
+    # case-insensitively, and no TRAIN utterance is held out of training.
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.dev_speakers = ["spk1", "spk0"]
+    config.num_runs = 1
+
+    corpus = _tiny_stub_corpus()  # 2 TRAIN/TEST speakers, 3 utterances each
+    real_train = experiment_module.train
+    captured = []
+
+    def _spy_train(model, loss_module, dataset, cfg, **kwargs):
+        captured.append((len(dataset), kwargs["dev_utterances"]))
+        return real_train(model, loss_module, dataset, cfg, **kwargs)
+
+    monkeypatch.setattr(experiment_module, "train", _spy_train)
+    run_experiment(config, corpus=corpus, strategies=("OS",))
+
+    [(train_size, dev_utterances)] = captured
+    assert train_size == 6  # all 2 x 3 TRAIN utterances
+    expected = [featurize_waveform(corpus.load_waveform(path)[0], config.transformation)
+                for speaker in ("SPK1", "SPK0") for path in corpus.utterance_paths("TEST", speaker)]
+    assert [label for _, label in dev_utterances] == [0, 0, 0, 1, 1, 1]
+    for (features, _), expected_features in zip(dev_utterances, expected):
+        np.testing.assert_allclose(features, expected_features)
+
+    config.evaluation.dev_speakers = ["SPK9"]
+    with pytest.raises(ValueError, match="SPK9"):
+        run_experiment(config, corpus=corpus, strategies=("OS",))
+
+
 def test_run_experiment_end_to_end_on_synthetic_corpus():
     config = ExperimentConfig()
     config.training.num_epochs = 3

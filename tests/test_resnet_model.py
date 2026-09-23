@@ -91,3 +91,9 @@ def test_ghost_vlad_pooling_output_shape_and_l2_normalized():
 
     norms = out.reshape(3, 4, 8).norm(p=2, dim=-1)
     torch.testing.assert_close(norms, torch.ones_like(norms))
+
+
+def test_uses_keras_batch_norm_defaults():
+    norms = [m for m in _tiny_model().modules() if isinstance(m, torch.nn.BatchNorm2d)]
+    assert norms
+    assert all(m.momentum == 0.01 and m.eps == 1e-3 for m in norms)

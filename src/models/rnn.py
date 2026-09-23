@@ -22,6 +22,25 @@ class RNNBackend(nn.Module):
             nn.Linear(1024, 512),
         )
 
+        # Keras LSTM/Dense defaults: glorot_uniform kernels, orthogonal
+        # recurrent kernels, zero biases except the forget gate's
+        # (unit_forget_bias=True). Keras' gate order (i, f, c, o) matches
+        # torch's (i, f, g, o); torch sums b_ih and b_hh, so only b_ih gets
+        # the forget-gate 1.
+        for lstm in (self.lstm1, self.lstm2):
+            for name, param in lstm.named_parameters():
+                if name.startswith("weight_ih"):
+                    nn.init.xavier_uniform_(param)
+                elif name.startswith("weight_hh"):
+                    nn.init.orthogonal_(param)
+                else:
+                    nn.init.zeros_(param)
+                    if name.startswith("bias_ih"):
+                        param.data[hidden_size:2 * hidden_size] = 1.0
+        for linear in (self.backend_head, self.bottleneck_head[1]):
+            nn.init.xavier_uniform_(linear.weight)
+            nn.init.zeros_(linear.bias)
+
     def forward(self, x):
         x = x.squeeze(1)  # (batch, 1, T, F) -> (batch, T, F)
         x, _ = self.lstm1(x)

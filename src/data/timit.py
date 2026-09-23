@@ -73,6 +73,24 @@ class TimitCorpus:
             zf.extractall(extracted)
         return extracted
 
+    # Standard TIMIT: 462 TRAIN / 168 TEST speakers x 10 sentences. Neururer et
+    # al. 2024's SV protocol is defined over exactly these 1680 TEST sentences
+    # ("2.82 mio. pairwise comparisons" = 1680 * 1679).
+    EXPECTED_UTTERANCES = {"TRAIN": 4620, "TEST": 1680}
+
+    def check_standard_size(self):
+        """Raises if the scanned corpus isn't standard TIMIT's size -- e.g. a
+        copy shipping each sentence twice (SA1.WAV and SA1.WAV.wav, both
+        matched by _scan_split), which would silently add identical-audio
+        target pairs to SV and double every training epoch."""
+        for split, expected in self.EXPECTED_UTTERANCES.items():
+            found = sum(len(paths) for paths in self._utterances[split].values())
+            if found != expected:
+                raise ValueError(
+                    f"TIMIT {split} has {found} utterances under {self._splits[split]}, expected {expected} "
+                    "-- check for duplicate audio files per sentence (e.g. both .WAV and .WAV.wav)"
+                )
+
     def speakers(self, split):
         return sorted(self._utterances[split.upper()].keys())
 

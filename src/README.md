@@ -65,14 +65,19 @@ Each run evaluates dev-set SV EER after *every* epoch and keeps the
 best-scoring checkpoint's weights, matching `context/src`'s `EvalCallback` +
 `get_reference_data`: the paper's Tables 1/2 numbers come from that best dev
 checkpoint, not from whatever state training happens to end in. On TIMIT,
-this dev set is `evaluation.dev_holdout_per_speaker` (default 2) of each
-TRAIN speaker's own utterances, held out from gradient training and used
-only for this periodic checkpoint selection (see `experiment.py`'s
-`_featurize_train_dev_split`) -- mirroring context/src's own
-`AUDIO_LIST_TRAIN`/`AUDIO_LIST_VAL` split out of the same TRAIN speaker pool
-(`generator.py`'s `load_train_val_locs`). The TEST split stays completely
-untouched until final SV/SC scoring, so checkpoint selection never draws
-from the same pool the reported numbers come from.
+the configs set `evaluation.dev_speakers` to the standard 50-speaker TIMIT
+development set (TEST-split speakers never trained on; Kaldi's
+`egs/timit/s5/conf/dev_spk.list`), the closest match to context/src's
+`development` SV list (`00_configs/04_evaluation/TIMIT-00_ORIGINAL.json`,
+whose list file isn't in the reference repo), and all TRAIN utterances are
+trained on. As in the paper, final SV is scored on the *full* TEST split,
+so it includes these 50 speakers. With `training.paper_checkpoint_epochs`
+(set in the TIMIT configs) only the 11 epochs `np.linspace(0, 127, 11)`
+that context/src's `EvalCallback` evaluates are best-checkpoint candidates.
+Without `dev_speakers`, the dev set falls back to
+`evaluation.dev_holdout_per_speaker` (default 2) of each TRAIN speaker's
+own utterances (see `experiment.py`'s `_featurize_train_dev_split`) -- on
+TIMIT these are SA1/SA2, which have identical text for every speaker.
 
 Training stops early once dev EER hasn't improved for
 `training.early_stopping_patience` epochs (default 15) -- a pragmatic

@@ -563,3 +563,36 @@ def test_restore_rng_state_moves_the_torch_state_tensors_back_to_cpu(monkeypatch
     assert received_cpu == [fake_cpu_state]
     assert all(t.cpu_called for t in fake_cuda_states)
     assert received_cuda == [fake_cuda_states]
+
+
+def test_paper_checkpoint_epochs_restricts_best_checkpoint_to_the_11_epoch_schedule(monkeypatch, tmp_path, synthetic_utterances):
+    # Same schedule as above (num_epochs=21 -> even epochs only): with
+    # paper_checkpoint_epochs set, the odd-epoch global minimum (epoch 1) must
+    # not be kept; the best even epoch (6) is.
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 21
+    config.training.batch_size = 4
+    config.training.paper_checkpoint_epochs = True
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    eer_sequence = [0.9] * 21
+    eer_sequence[1] = 0.01
+    eer_sequence[6] = 0.05
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: eer_sequence.pop(0))
+
+    kept_epochs = []
+    monkeypatch.setattr(trainer, "_save_best_checkpoint", lambda path, epoch, metric, state: kept_epochs.append(epoch))
+
+    train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        checkpoint_path=tmp_path / "run.pt",
+    )
+
+    assert kept_epochs == [0, 6]

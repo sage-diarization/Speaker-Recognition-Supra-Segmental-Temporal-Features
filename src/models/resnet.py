@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .common import BackendOutput
+from .common import KERAS_BATCH_NORM, BackendOutput
 
 
 class _ConvBlock(nn.Module):
@@ -14,13 +14,13 @@ class _ConvBlock(nn.Module):
         super().__init__()
         f1, f2, f3 = filters
         self.reduce = nn.Conv2d(in_channels, f1, kernel_size=1, stride=stride, bias=False)
-        self.reduce_bn = nn.BatchNorm2d(f1)
+        self.reduce_bn = nn.BatchNorm2d(f1, **KERAS_BATCH_NORM)
         self.conv = nn.Conv2d(f1, f2, kernel_size=3, padding=1, bias=False)
-        self.conv_bn = nn.BatchNorm2d(f2)
+        self.conv_bn = nn.BatchNorm2d(f2, **KERAS_BATCH_NORM)
         self.increase = nn.Conv2d(f2, f3, kernel_size=1, bias=False)
-        self.increase_bn = nn.BatchNorm2d(f3)
+        self.increase_bn = nn.BatchNorm2d(f3, **KERAS_BATCH_NORM)
         self.shortcut = nn.Conv2d(in_channels, f3, kernel_size=1, stride=stride, bias=False)
-        self.shortcut_bn = nn.BatchNorm2d(f3)
+        self.shortcut_bn = nn.BatchNorm2d(f3, **KERAS_BATCH_NORM)
 
     def forward(self, x):
         identity = self.shortcut_bn(self.shortcut(x))
@@ -39,11 +39,11 @@ class _IdentityBlock(nn.Module):
         super().__init__()
         f1, f2, f3 = filters
         self.reduce = nn.Conv2d(channels, f1, kernel_size=1, bias=False)
-        self.reduce_bn = nn.BatchNorm2d(f1)
+        self.reduce_bn = nn.BatchNorm2d(f1, **KERAS_BATCH_NORM)
         self.conv = nn.Conv2d(f1, f2, kernel_size=3, padding=1, bias=False)
-        self.conv_bn = nn.BatchNorm2d(f2)
+        self.conv_bn = nn.BatchNorm2d(f2, **KERAS_BATCH_NORM)
         self.increase = nn.Conv2d(f2, f3, kernel_size=1, bias=False)
-        self.increase_bn = nn.BatchNorm2d(f3)
+        self.increase_bn = nn.BatchNorm2d(f3, **KERAS_BATCH_NORM)
 
     def forward(self, x):
         out = F.relu(self.reduce_bn(self.reduce(x)))
@@ -65,7 +65,7 @@ class ResNet34sBackbone(nn.Module):
         super().__init__()
         self.stem = nn.Sequential(
             nn.Conv2d(1, 64, kernel_size=7, padding=3, bias=False),
-            nn.BatchNorm2d(64),
+            nn.BatchNorm2d(64, **KERAS_BATCH_NORM),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )

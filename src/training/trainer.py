@@ -169,6 +169,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     matches context/src's EvalCallback + get_reference_data, which is what
     Neururer et al. 2024's Tables 1/2 numbers are actually computed from (the
     best dev checkpoint, not whatever state training happens to end in).
+    With config.training.paper_checkpoint_epochs set, only the 11 epochs that
+    EvalCallback evaluates (see paper_comparable_best below) are candidates.
 
     dev_eval_fn(embeddings, labels) -> eer defaults to equal_error_rate's
     exhaustive all-pairs comparison (TIMIT's SV protocol); pass a different
@@ -282,7 +284,8 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}dev/EER": dev_eer})
                 if epoch in paper_comparable_epochs and (paper_comparable_best is None or dev_eer < paper_comparable_best):
                     paper_comparable_best = dev_eer
-                if best_metric is None or dev_eer < best_metric:
+                is_candidate = not config.training.paper_checkpoint_epochs or epoch in paper_comparable_epochs
+                if is_candidate and (best_metric is None or dev_eer < best_metric):
                     best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
                     if checkpoint_path is not None:
                         _save_best_checkpoint(best_checkpoint_path(checkpoint_path), best_epoch, best_metric, best_state)

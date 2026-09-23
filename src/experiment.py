@@ -99,6 +99,23 @@ def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
     return train_utterances, dev_utterances, label_map
 
 
+def _featurize_dev_speakers(corpus, split, transformation, speaker_ids):
+    """All of split's utterances of speaker_ids (matched case-insensitively, as
+    TIMIT copies differ in speaker-directory case), for checkpoint selection on
+    speakers never trained on -- context/src selects on its "development" SV
+    list the same way, rather than on training speakers' own utterances."""
+    available = {speaker.upper(): speaker for speaker in corpus.speakers(split)}
+    missing = [speaker for speaker in speaker_ids if speaker.upper() not in available]
+    if missing:
+        raise ValueError(f"dev speakers not found in {split} split: {missing}")
+    utterances = []
+    for label, speaker in enumerate(available[speaker.upper()] for speaker in speaker_ids):
+        for path in corpus.utterance_paths(split, speaker):
+            waveform, _ = corpus.load_waveform(path)
+            utterances.append((featurize_waveform(waveform, transformation), label))
+    return utterances
+
+
 def build_sc_utterances(corpus, split, transformation, num_speakers, speaker_ids=None):
     """Builds the SC task's per-speaker utterances by concatenating sentences
     rather than using single raw sentences, per Neururer et al. 2024 Section
@@ -366,10 +383,19 @@ def run_experiment(config, corpus=None, strategies=None):
         def dev_eval_fn(embeddings, utterance_ids):
             return indexed_trial_equal_error_rate(embeddings, utterance_ids, dev_trials)
     else:
-        corpus = corpus or TimitCorpus(config.data)
-        train_utterances, dev_utterances, train_label_map = _featurize_train_dev_split(
-            corpus, transformation, config.evaluation.dev_holdout_per_speaker
-        )
+        if corpus is None:
+            corpus = TimitCorpus(config.data)
+            corpus.check_standard_size()
+        if config.evaluation.dev_speakers:
+            # Speaker-disjoint dev set from TEST (the standard TIMIT
+            # development speakers, see the TIMIT configs), matching
+            # context/src's "development" SV list; TRAIN is trained on in full.
+            train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation)
+            dev_utterances = _featurize_dev_speakers(corpus, "TEST", transformation, config.evaluation.dev_speakers)
+        else:
+            train_utterances, dev_utterances, train_label_map = _featurize_train_dev_split(
+                corpus, transformation, config.evaluation.dev_holdout_per_speaker
+            )
         sv_eval_utterances, _ = _featurize_split(corpus, "TEST", transformation)
         sc_utterances = build_sc_utterances(
             corpus, "TEST", transformation, config.evaluation.sc_num_speakers, config.evaluation.sc_speakers

@@ -21,6 +21,9 @@ loss:
   type: "ANGULAR_MARGIN"
 
 training:
+  # Only the paper's 11 evaluated epochs (np.linspace(0, 127, 11)) are
+  # best-checkpoint candidates, as in context/src's EvalCallback.
+  paper_checkpoint_epochs: true
   num_epochs: 128
   batch_size: 100
   # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
@@ -31,6 +34,20 @@ training:
   # left at that default here, override if needed.
 
 evaluation:
+  # Checkpoint selection set: the standard 50-speaker TIMIT development set
+  # (all TEST split, disjoint from TRAIN and from the 24-speaker core test set;
+  # Kaldi egs/timit/s5/conf/dev_spk.list) -- the closest match to context/src's
+  # "development" SV list (00_configs/04_evaluation/TIMIT-00_ORIGINAL.json),
+  # whose file isn't in the reference repo. SV is still reported on all of TEST.
+  dev_speakers: [
+      "FAKS0", "FDAC1", "FJEM0", "MGWT0", "MJAR0", "MMDB1", "MMDM2", "MPDF0",
+      "FCMH0", "FKMS0", "MBDG0", "MBWM0", "MCSH0", "FADG0", "FDMS0", "FEDW0",
+      "MGJF0", "MGLB0", "MRTK0", "MTAA0", "MTDT0", "MTHC0", "MWJG0", "FNMR0",
+      "FREW0", "FSEM0", "MBNS0", "MMJR0", "MDLS0", "MDLF0", "MDVC0", "MERS0",
+      "FMAH0", "FDRW0", "MRCS0", "MRJM4", "FCAL1", "MMWH0", "FJSJ0", "MAJC0",
+      "MJSW0", "MREB0", "FGJD0", "FJMG0", "MROA0", "MTEB0", "MJFC0", "MRJR0",
+      "FMML0", "MRWS1"
+  ]
   sc_num_speakers: 40
   # The paper's 40 SC speakers (15 female / 25 male, all TIMIT TEST), from its
   # reference [13]'s github.com/stdm/ZHAW_deep_voice

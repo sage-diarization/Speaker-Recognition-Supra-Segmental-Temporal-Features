@@ -156,8 +156,10 @@ class LossConfig:
 class OptimizerConfig:
     type: str = "ADAM"
     learning_rate: float = 1e-4
-    # L2 weight decay -- 0.0 (off) matches CNN/Conformer/RNN's original recipes;
-    # ResNet's original config sets 1e-4 (context/src/00_configs/05_model/RES34S.json).
+    # L2 weight decay -- 0.0 (off) matches CNN/Conformer/RNN's original recipes.
+    # ResNet's original sets Keras l2(1e-4) (context/src/00_configs/05_model/RES34S.json),
+    # which adds 1e-4 * sum(w^2) to the loss, i.e. a 2e-4 * w gradient -- torch's
+    # weight_decay adds weight_decay * w, so the ResNet configs set 2e-4.
     weight_decay: float = 0.0
 
 
@@ -195,6 +197,12 @@ class TrainingConfig:
     # over epoch. Left unset (null/None, the default), this condition is off
     # and only the no-improvement-at-all check above applies.
     early_stopping_min_improvement_rate: float | None = None
+    # Restrict best-checkpoint selection to the 11 epochs
+    # np.linspace(0, num_epochs - 1, 11) -- the only epochs context/src's
+    # EvalCallback evaluates (TEST_EPOCHS) and so the only candidates behind
+    # Neururer et al. 2024's reported numbers. Off (the default), every epoch
+    # is a candidate. Dev EER is still computed every epoch either way.
+    paper_checkpoint_epochs: bool = False
 
 
 @dataclass
@@ -213,6 +221,12 @@ class EvaluationConfig:
     # checkpoint selection never draws from the same pool as the final TEST-set
     # SV/SC numbers (see src/experiment.py's _featurize_train_dev_split).
     dev_holdout_per_speaker: int = 2
+    # TIMIT only: when set, checkpoint selection instead uses all TEST utterances
+    # of these (speaker-disjoint from TRAIN) speakers, and all TRAIN utterances are
+    # trained on (dev_holdout_per_speaker is ignored). The TIMIT configs set the
+    # standard 50-speaker TIMIT development set, the closest match to context/src's
+    # "development" SV list (see src/experiment.py's run_experiment).
+    dev_speakers: list = field(default_factory=list)
 
 
 @dataclass

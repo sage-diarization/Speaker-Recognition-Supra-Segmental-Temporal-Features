@@ -39,3 +39,6 @@ def test_nist_sphere_wav_loads_and_featurizes(real_corpus):
     features = featurize_waveform(waveform, transformation)
     assert features.shape[1] == transformation.n_mels
     assert features.shape[0] > 0
+
+def test_real_corpus_has_standard_timit_size(real_corpus):
+    real_corpus.check_standard_size()

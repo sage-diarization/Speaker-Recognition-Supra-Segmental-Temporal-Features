@@ -39,3 +39,15 @@ def test_gradients_flow_to_conv_weights():
     first_conv = model.conv[0]
     assert first_conv.weight.grad is not None
     assert torch.any(first_conv.weight.grad != 0)
+
+
+def test_uses_keras_batch_norm_and_initializer_defaults():
+    # context/src's Keras CNN: BatchNormalization(momentum=0.99, epsilon=1e-3)
+    # and glorot_uniform kernels with zero biases.
+    model = CNNBackend(segment_length=94, num_freqs=128)
+    norms = [m for m in model.modules() if isinstance(m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d))]
+    assert len(norms) == 3
+    assert all(m.momentum == 0.01 and m.eps == 1e-3 for m in norms)
+    for m in model.modules():
+        if isinstance(m, (torch.nn.Conv2d, torch.nn.Linear)):
+            assert torch.count_nonzero(m.bias) == 0

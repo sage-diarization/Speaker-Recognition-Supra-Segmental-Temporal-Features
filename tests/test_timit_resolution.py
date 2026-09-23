@@ -49,3 +49,24 @@ def test_raises_actionable_error_when_nothing_is_configured(tmp_path):
     config = DataConfig(cache_dir=str(tmp_path / "cache"))
     with pytest.raises(TimitNotAvailableError, match="LDC-licensed"):
         TimitCorpus(config)
+
+
+def test_check_standard_size_rejects_non_standard_utterance_counts(tmp_path, monkeypatch):
+    _make_fake_timit_tree(tmp_path)
+    corpus = TimitCorpus(DataConfig(timit_root=str(tmp_path)))
+    with pytest.raises(ValueError, match="TIMIT TRAIN has 1 utterances"):
+        corpus.check_standard_size()
+
+    monkeypatch.setattr(TimitCorpus, "EXPECTED_UTTERANCES", {"TRAIN": 1, "TEST": 1})
+    corpus.check_standard_size()
+
+
+def test_check_standard_size_catches_duplicate_audio_per_sentence(tmp_path, monkeypatch):
+    # Some TIMIT copies ship each sentence as both SA1.WAV (NIST) and
+    # SA1.WAV.wav (RIFF); _scan_split matches both.
+    _make_fake_timit_tree(tmp_path)
+    (tmp_path / "TEST" / "DR1" / "FXYZ0" / "SA1.WAV.wav").write_bytes(b"not-real-audio")
+    monkeypatch.setattr(TimitCorpus, "EXPECTED_UTTERANCES", {"TRAIN": 1, "TEST": 1})
+    corpus = TimitCorpus(DataConfig(timit_root=str(tmp_path)))
+    with pytest.raises(ValueError, match="TIMIT TEST has 2 utterances"):
+        corpus.check_standard_size()
