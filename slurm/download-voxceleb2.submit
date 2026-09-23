@@ -5,6 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --account=cai_cv
+#SBATCH --partition=cpu
 #SBATCH --output=logs/%j_%N.out
 #SBATCH --error=logs/%j_%N.out
 
