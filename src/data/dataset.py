@@ -16,6 +16,18 @@ def featurize_waveform(waveform, transformation_config):
     return normalise_standardize(spectrogram)
 
 
+def featurize_frame_range(read_samples_fn, path, start, stop, transformation_config):
+    """Features of frames [start, stop) of the utterance at path, reading only
+    the samples those frames cover -- equal (up to float32 rounding in the
+    mel matmul) to featurize_waveform(whole utterance)[start:stop], since every step after
+    framing (STFT, mel filterbank, DRC, per-frame standardization) is
+    frame-local and frame i spans samples [i * frame_step, i * frame_step +
+    frame_length) (src/data/features.py's unpadded framing)."""
+    first_sample = start * transformation_config.frame_step
+    last_sample = (stop - 1) * transformation_config.frame_step + transformation_config.frame_length
+    return featurize_waveform(read_samples_fn(path, first_sample, last_sample), transformation_config)
+
+
 class SegmentDataset(Dataset):
     """Draws a fresh segment (OS/SS/SU) per access, re-sampled every epoch
     since DataLoader calls __getitem__ again each pass over the dataset.
@@ -37,7 +49,12 @@ class SegmentDataset(Dataset):
 
     def __getitem__(self, idx):
         features_or_loader, label = self.utterances[idx]
-        features = resolve_features(features_or_loader)
+        # A windowed LazyFeatures is handed to the draw function as-is: its
+        # slicing featurizes just the drawn frames (see featurize_frame_range).
+        if getattr(features_or_loader, "windowed", False):
+            features = features_or_loader
+        else:
+            features = resolve_features(features_or_loader)
         segment = self.draw_fn(features, self.segment_length, self.rng)
         tensor = torch.from_numpy(segment).float().unsqueeze(0)
         return tensor, label

@@ -15,12 +15,34 @@ class LazyFeatures:
     require featurizing (STFT + mel filterbank + DRC + standardize) every
     utterance just to filter out the rare short ones."""
 
-    def __init__(self, compute_fn, length):
+    def __init__(self, compute_fn, length, frames_fn=None):
         self._compute_fn = compute_fn
         self.length = length
+        # Optional frames_fn(start, stop) featurizing only frames [start, stop)
+        # (see src/data/dataset.py's featurize_frame_range) -- lets training
+        # draw a segment by reading just its samples, not the whole file.
+        self._frames_fn = frames_fn
 
     def __call__(self):
         return self._compute_fn()
+
+    @property
+    def windowed(self):
+        return self._frames_fn is not None
+
+    @property
+    def shape(self):
+        # Only the time axis is known without featurizing -- all that
+        # src/data/segments.py's draw functions read from `.shape`.
+        return (self.length,)
+
+    def __getitem__(self, key):
+        """Contiguous frame slices only (all src/data/segments.py's draw
+        functions take), featurized via frames_fn."""
+        if not isinstance(key, slice) or key.step not in (None, 1):
+            raise TypeError("LazyFeatures supports only contiguous frame slices")
+        start, stop, _ = key.indices(self.length)
+        return self._frames_fn(start, stop)
 
 
 def resolve_features(entry):

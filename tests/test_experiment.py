@@ -81,6 +81,7 @@ def _make_voxceleb_stub_corpus(tmp_path, num_speakers=3, utterances_per_speaker=
     class _VoxCelebStubCorpus:
         def __init__(self):
             self.trial_pairs = trial_pairs
+            self.dev_trial_pairs = trial_pairs
 
         def speakers(self, split):
             assert split == "TRAIN"
@@ -101,6 +102,10 @@ def _make_voxceleb_stub_corpus(tmp_path, num_speakers=3, utterances_per_speaker=
         def load_waveform(path):
             waveform, sample_rate = sf.read(str(path), dtype="float32")
             return waveform, sample_rate
+
+        @staticmethod
+        def load_samples(path, start, stop):
+            return sf.read(str(path), start=start, stop=stop, dtype="float32")[0]
 
     return _VoxCelebStubCorpus()
 
@@ -675,6 +680,48 @@ def test_run_experiment_voxceleb_end_to_end_skips_sc_and_uses_trial_list_eval(tm
     report = format_results(results)
     assert "SV (EER)" in report
     assert "SC (MR)" not in report
+
+
+def test_run_experiment_voxceleb_selects_on_dev_trials_and_reports_on_eval_trials(monkeypatch, tmp_path):
+    # Paper protocol (VoxCeleb2 training): checkpoint selection on VoxCeleb1-O
+    # (corpus.dev_trial_pairs), reported SV on VoxCeleb1-H (corpus.trial_pairs).
+    # Also runs training through DataLoader workers over windowed entries.
+    config = ExperimentConfig()
+    config.data.dataset = "VoxCeleb"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.training.num_workers = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+
+    corpus = _make_voxceleb_stub_corpus(tmp_path)
+    corpus.dev_trial_pairs = [
+        (1, "idEVAL1/clip0/00001.wav", "idEVAL1/clip1/00001.wav"),
+        (0, "idEVAL1/clip1/00001.wav", "idEVAL0/clip1/00001.wav"),
+    ]
+    evaluated_ids = {"dev": [], "eval": []}
+    real_eer = experiment_module.trial_list_equal_error_rate
+
+    def _spy_eer(embeddings, utterance_ids, trial_pairs):
+        evaluated_ids["dev" if trial_pairs is corpus.dev_trial_pairs else "eval"].append(set(utterance_ids))
+        return real_eer(embeddings, utterance_ids, trial_pairs)
+
+    captured_train_entries = []
+    real_train = experiment_module.train
+
+    def _spy_train(model, loss_module, dataset, cfg, **kwargs):
+        captured_train_entries.extend(entry for entry, _ in dataset.utterances)
+        return real_train(model, loss_module, dataset, cfg, **kwargs)
+
+    monkeypatch.setattr(experiment_module, "trial_list_equal_error_rate", _spy_eer)
+    monkeypatch.setattr(experiment_module, "train", _spy_train)
+    run_experiment(config, corpus=corpus, strategies=("OS",))
+
+    assert all(entry.windowed for entry in captured_train_entries)
+    assert evaluated_ids["dev"] == [{"idEVAL1/clip0/00001.wav", "idEVAL1/clip1/00001.wav", "idEVAL0/clip1/00001.wav"}]
+    assert len(evaluated_ids["eval"]) == len(STRATEGIES)
+    assert all(ids == {"idEVAL0/clip0/00001.wav", "idEVAL0/clip1/00001.wav", "idEVAL1/clip0/00001.wav"}
+               for ids in evaluated_ids["eval"])
 
 
 def test_run_experiment_voxceleb_wandb_tags_and_name_identify_the_dataset(monkeypatch, tmp_path):

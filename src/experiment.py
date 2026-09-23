@@ -12,7 +12,7 @@ import numpy as np
 from . import tracking
 from .config import ExperimentConfig
 from .data.aishell4 import Aishell4Corpus
-from .data.dataset import SegmentDataset, featurize_waveform
+from .data.dataset import SegmentDataset, featurize_frame_range, featurize_waveform
 from .data.lazy_features import LazyFeatures, expected_frame_count
 from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
@@ -167,24 +167,32 @@ def _lazy_featurize_split(corpus, split, transformation):
     corpus.raw_sample_count(path) supplies each entry's frame count without
     featurizing it -- a cheap file-header probe for TIMIT/VoxCeleb's
     plain-file paths, or no I/O at all for AISHELL-4's segment refs, which
-    already know their own sample count from the TextGrid times."""
+    already know their own sample count from the TextGrid times.
+
+    A corpus with load_samples(path, start, stop) (VoxCelebCorpus) also gets
+    each entry a frames_fn, so training segment draws read only the drawn
+    frames' samples instead of the whole file (see featurize_frame_range)."""
     speakers = corpus.speakers(split)
     label_map = {speaker: i for i, speaker in enumerate(speakers)}
+    load_samples = getattr(corpus, "load_samples", None)
     utterances = []
     for speaker in speakers:
         for path in corpus.utterance_paths(split, speaker):
             length = expected_frame_count(corpus.raw_sample_count(path), transformation)
             compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation)
-            utterances.append((LazyFeatures(compute_fn, length), label_map[speaker]))
+            frames_fn = None
+            if load_samples is not None:
+                frames_fn = functools.partial(featurize_frame_range, load_samples, path, transformation_config=transformation)
+            utterances.append((LazyFeatures(compute_fn, length, frames_fn), label_map[speaker]))
     return utterances, label_map
 
 
-def _lazy_trial_utterances(corpus, transformation):
-    """One lazy utterance entry per unique path referenced in the corpus's
-    verification trial pairs, labeled by that relative path (not a speaker
-    id) so trial_list_equal_error_rate can look embeddings back up by
-    utterance id after extract_embeddings runs."""
-    relative_paths = sorted({path for _, path1, path2 in corpus.trial_pairs for path in (path1, path2)})
+def _lazy_trial_utterances(corpus, trial_pairs, transformation):
+    """One lazy utterance entry per unique path referenced in trial_pairs,
+    labeled by that relative path (not a speaker id) so
+    trial_list_equal_error_rate can look embeddings back up by utterance id
+    after extract_embeddings runs."""
+    relative_paths = sorted({path for _, path1, path2 in trial_pairs for path in (path1, path2)})
     utterances = []
     for relative_path in relative_paths:
         full_path = corpus.trial_utterance_path(relative_path)
@@ -323,10 +331,19 @@ def run_experiment(config, corpus=None, strategies=None):
         # SV evaluation is over a fixed trial-pairs list (the standard
         # VoxCeleb protocol), not the exhaustive all-vs-all pairing TIMIT's
         # SV task uses, hence the different eval function below.
+        #
+        # Checkpoint selection uses corpus.dev_trial_pairs and reported SV
+        # uses corpus.trial_pairs: VoxCeleb1-O vs. VoxCeleb1-H under the
+        # paper's VoxCeleb2-train protocol (context/src's
+        # 04_evaluation/VOX-00_ORIGINAL.json), the same list otherwise (see
+        # src/data/voxceleb.py).
         corpus = corpus or VoxCelebCorpus(config)
         train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation)
-        sv_eval_utterances = _lazy_trial_utterances(corpus, transformation)
-        dev_utterances = sv_eval_utterances
+        sv_eval_utterances = _lazy_trial_utterances(corpus, corpus.trial_pairs, transformation)
+        if corpus.dev_trial_pairs is corpus.trial_pairs:
+            dev_utterances = sv_eval_utterances
+        else:
+            dev_utterances = _lazy_trial_utterances(corpus, corpus.dev_trial_pairs, transformation)
         sc_utterances = None
 
         def sv_eval_fn(embeddings, utterance_ids):
@@ -336,7 +353,8 @@ def run_experiment(config, corpus=None, strategies=None):
         # plain equal_error_rate would be nonsensical here (utterance_ids are
         # unique per-utterance path strings, not speaker ids, so every pair
         # would count as "different speaker").
-        dev_eval_fn = sv_eval_fn
+        def dev_eval_fn(embeddings, utterance_ids):
+            return trial_list_equal_error_rate(embeddings, utterance_ids, corpus.dev_trial_pairs)
     elif dataset_name == "aishell4":
         # AISHELL-4 has a real per-speaker TRAIN/TEST split like TIMIT (not
         # VoxCeleb's trial-pairs protocol) -- see src/data/aishell4.py's

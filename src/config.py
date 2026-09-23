@@ -66,10 +66,19 @@ class VoxCelebConfig:
     the "hard"/"extended" VoxSRC lists."""
 
     root: str = "~/.cache/sst-experiment/voxceleb"
-    # The verification trial-pairs list to download+evaluate against
-    # (default: the cleaned original 40-held-out-speaker list). Passed
-    # straight through to VoxCeleb1Verification's meta_url.
+    # The verification trial-pairs list used for checkpoint selection -- and,
+    # unless eval_trial_meta_url is set, also for the reported SV numbers
+    # (default: the cleaned original 40-held-out-speaker list, VoxCeleb1-O).
+    # Passed straight through to VoxCeleb1Verification's meta_url.
     trial_meta_url: str = "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+    # Separate trial list for the reported SV numbers (e.g. VoxCeleb1-H,
+    # list_test_hard2.txt, as in the paper). Empty: trial_meta_url is used.
+    eval_trial_meta_url: str = ""
+    # Local VoxCeleb2 dev WAV tree (<speaker>/<video>/<utterance>.wav; not
+    # auto-downloadable, and shipped as AAC -- convert to 16 kHz WAV first).
+    # Set: train on it, the paper's protocol. Empty: the VoxCeleb1-only
+    # substitute described above.
+    vox2_root: str = ""
 
 
 @dataclass
@@ -203,6 +212,10 @@ class TrainingConfig:
     # Neururer et al. 2024's reported numbers. Off (the default), every epoch
     # is a candidate. Dev EER is still computed every epoch either way.
     paper_checkpoint_epochs: bool = False
+    # DataLoader worker processes for training batches (0: load in the main
+    # process). Lazily-featurized corpora (VoxCeleb) read one file per
+    # training segment, so they need several to keep the GPU busy.
+    num_workers: int = 0
 
 
 @dataclass

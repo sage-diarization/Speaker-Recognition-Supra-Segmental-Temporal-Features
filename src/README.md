@@ -122,34 +122,54 @@ Point the pipeline at your own licensed copy via `configs/cnn_timit.yaml`
 
 ## Running on VoxCeleb
 
-Set `data.dataset: "VoxCeleb"` (see `configs/cnn_voxceleb.yaml`) to run
-against VoxCeleb instead of TIMIT. `src/data/voxceleb.py`'s `VoxCelebCorpus`
-fetches and caches the corpus automatically via torchaudio's own downloader
-(`torchaudio.datasets.VoxCeleb1Verification`, `voxceleb.root`) — no manual
-download/credential step needed, unlike TIMIT.
+Set `data.dataset: "VoxCeleb"` (see `configs/cnn-voxceleb.yaml`) to run
+against VoxCeleb instead of TIMIT. The VoxCeleb configs follow Neururer et
+al. 2024's protocol (Section 3.2, `context/src`'s
+`04_evaluation/VOX-00_ORIGINAL.json`):
 
-**This is a deliberate deviation from Neururer et al. 2024's actual
-protocol**, worth understanding before comparing numbers to the paper: the
-paper trains on VoxCeleb2 (5,994 speakers) and evaluates on VoxCeleb1's
-"hard" test set (Section 3.2). torchaudio ships no VoxCeleb2 downloader, so
-this project instead trains on VoxCeleb1's *own* speakers, excluding
-whichever 40 speakers appear in the verification trial list so train/eval
-speakers stay disjoint (the standard open-set setup) — i.e. a
-VoxCeleb1-train/VoxCeleb1-test substitute for the paper's
-VoxCeleb2-train/VoxCeleb1-test protocol. This is also why
-`voxceleb.trial_meta_url` must stay the *original* `veri_test2.txt` list (40
-held-out speakers) rather than the "hard"/"extended" VoxSRC lists
-(`list_test_hard2.txt` / `list_test_all2.txt`): fetched and inspected
-directly while building this, those span 1,190 of VoxCeleb1's 1,251
-speakers, so excluding their speakers from training would leave almost
-nothing to train on, and *not* excluding them would leak most training
-speakers into evaluation. See `src/data/voxceleb.py`'s module docstring for
-the full detail.
+- **Training** on VoxCeleb2 dev (5,994 speakers, ~1.09M utterances) from
+  `voxceleb.vox2_root`. VoxCeleb2 can't be auto-downloaded and ships as AAC
+  (`.m4a`): download it yourself and convert it to 16 kHz mono WAV (e.g.
+  with ffmpeg), keeping the `<speaker>/<video>/<utterance>.wav` layout (at
+  any depth under `vox2_root`).
+- **Checkpoint selection** on VoxCeleb1-O cleaned (`voxceleb.trial_meta_url`,
+  `veri_test2.txt`), at the paper's 11 epochs (`training.paper_checkpoint_epochs`),
+  over the full 128 epochs (no early stopping).
+- **Reported SV** on VoxCeleb1-H cleaned (`voxceleb.eval_trial_meta_url`,
+  `list_test_hard2.txt`, ~550k trials).
+
+VoxCeleb1 itself (both trial lists' audio) is fetched and cached
+automatically under `voxceleb.root` via torchaudio's own downloader
+(`torchaudio.datasets.VoxCeleb1Verification`).
+
+As in the paper, an epoch draws one 1 s segment per training utterance, not
+every frame of it. Training reads only the samples behind each drawn segment
+(`LazyFeatures`' `frames_fn`, see `src/data/dataset.py`'s
+`featurize_frame_range`; equal to featurizing the whole file then slicing,
+up to float32 rounding) rather than decoding whole files, spread over
+`training.num_workers` DataLoader workers (8 in the VoxCeleb configs, matched
+by the SLURM jobs' `--cpus-per-task`). Startup still probes every training
+file's header once for its length, which on a network file system can take
+a while for VoxCeleb2's ~1.09M files. The full run is longer than the SLURM
+jobs' 24h limit, so resubmit the job: it resumes from `checkpoint_every_epochs: 1`.
+
+**VoxCeleb1-only substitute.** Removing `vox2_root` and `eval_trial_meta_url`
+falls back to training on VoxCeleb1's *own* speakers, excluding whichever
+speakers appear in the trial list(s) so train/eval speakers stay disjoint,
+and selecting and reporting on that same list -- **a deliberate deviation
+from the paper**. In that mode `voxceleb.trial_meta_url` must stay the
+*original* `veri_test2.txt` list (40 held-out speakers) rather than the
+"hard"/"extended" VoxSRC lists (`list_test_hard2.txt` / `list_test_all2.txt`):
+fetched and inspected directly while building this, those span 1,190 of
+VoxCeleb1's 1,251 speakers, so excluding their speakers from training would
+leave almost nothing to train on, and *not* excluding them would leak most
+training speakers into evaluation. See `src/data/voxceleb.py`'s module
+docstring for the full detail.
 
 Two further consequences of VoxCeleb's scale and structure vs. TIMIT's,
 both handled automatically but worth knowing about:
 
-- **Lazy featurization.** VoxCeleb1 has ~148k training utterances (vs.
+- **Lazy featurization.** VoxCeleb has ~148k (VoxCeleb1) or ~1.09M (VoxCeleb2) training utterances (vs.
   TIMIT's ~5,500); eagerly featurizing all of them upfront (as TIMIT's path
   does) would need tens of GB of RAM. `src/data/lazy_features.py`'s
   `LazyFeatures` instead defers each utterance's featurization to first

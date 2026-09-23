@@ -27,6 +27,16 @@ class VoxCelebCorpus:
     the paper's actual VoxCeleb2-train/VoxCeleb1-test setup has no such
     conflict, since the two are separate, speaker-disjoint corpora.
 
+    Setting config.voxceleb.vox2_root instead selects the paper's own
+    protocol: training on every speaker of a local VoxCeleb2 dev WAV tree
+    (speaker-disjoint from VoxCeleb1 by construction, so nothing is excluded),
+    checkpoint selection on trial_meta_url (VoxCeleb1-O cleaned) and reported
+    SV on eval_trial_meta_url (VoxCeleb1-H cleaned) -- context/src's
+    04_evaluation/VOX-00_ORIGINAL.json and the paper's Section 3.2. In both
+    modes dev_trial_pairs is the checkpoint-selection list and trial_pairs
+    the reported one; they're the same list object when eval_trial_meta_url
+    is unset.
+
     Exposes a single "TRAIN" split via the same speakers()/utterance_paths()/
     load_waveform() interface as TimitCorpus (so src/experiment.py's
     TIMIT-shaped helpers apply unchanged), plus trial_pairs -- there is no
@@ -36,13 +46,25 @@ class VoxCelebCorpus:
     analogous SC utterance grouping is needed either)."""
 
     def __init__(self, config):
-        root = Path(config.voxceleb.root).expanduser()
+        voxceleb = config.voxceleb
+        root = Path(voxceleb.root).expanduser()
         root.mkdir(parents=True, exist_ok=True)
-        verification = VoxCeleb1Verification(root=str(root), meta_url=config.voxceleb.trial_meta_url, download=True)
-        self.trial_pairs = [(label, path1, path2) for label, path1, path2 in verification._flist]
+        self.dev_trial_pairs = _download_trial_pairs(root, voxceleb.trial_meta_url)
+        self.trial_pairs = self.dev_trial_pairs
+        if voxceleb.eval_trial_meta_url:
+            self.trial_pairs = _download_trial_pairs(root, voxceleb.eval_trial_meta_url)
 
         self._wav_root = root / "wav"
-        eval_speakers = {path.split("/")[0] for _, path1, path2 in self.trial_pairs for path in (path1, path2)}
+        if voxceleb.vox2_root:
+            self._train_utterances = _scan_voxceleb2(Path(voxceleb.vox2_root).expanduser())
+            return
+
+        eval_speakers = {
+            path.split("/")[0]
+            for pairs in (self.dev_trial_pairs, self.trial_pairs)
+            for _, path1, path2 in pairs
+            for path in (path1, path2)
+        }
 
         train_utterances = {}
         for wav_path in sorted(self._wav_root.glob("*/*/*.wav")):
@@ -76,3 +98,30 @@ class VoxCelebCorpus:
     def load_waveform(path):
         waveform, sample_rate = sf.read(str(path), dtype="float32")
         return waveform, sample_rate
+
+    @staticmethod
+    def load_samples(path, start, stop):
+        """Samples [start, stop) only -- a seek, not a full decode, for WAV."""
+        waveform, _ = sf.read(str(path), start=start, stop=stop, dtype="float32")
+        return waveform
+
+
+def _download_trial_pairs(root, meta_url):
+    # torchaudio downloads/extracts VoxCeleb1's wavs only once, and caches
+    # each trial list under root by its file name.
+    verification = VoxCeleb1Verification(root=str(root), meta_url=meta_url, download=True)
+    return [(label, path1, path2) for label, path1, path2 in verification._flist]
+
+
+def _scan_voxceleb2(root):
+    """{speaker_id: [wav paths]} over a VoxCeleb2 dev tree laid out as
+    <speaker>/<video>/<utterance>.wav at any nesting depth under root."""
+    utterances = {}
+    for wav_path in sorted(root.rglob("*.wav")):
+        utterances.setdefault(wav_path.parent.parent.name, []).append(wav_path)
+    if not utterances:
+        hint = ""
+        if next(root.rglob("*.m4a"), None) is not None:
+            hint = " -- found .m4a files instead: VoxCeleb2 ships as AAC, convert it to 16 kHz mono WAV first (e.g. with ffmpeg)"
+        raise RuntimeError(f"no VoxCeleb2 .wav files found under {root}{hint}")
+    return utterances

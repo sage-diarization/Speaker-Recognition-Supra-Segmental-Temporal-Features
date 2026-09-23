@@ -596,3 +596,18 @@ def test_paper_checkpoint_epochs_restricts_best_checkpoint_to_the_11_epoch_sched
     )
 
     assert kept_epochs == [0, 6]
+
+
+def test_dataloader_workers_draw_independent_segment_positions():
+    # Every worker starts from a copy of the dataset's segment-draw Generator;
+    # without reseeding in worker_init_fn, worker 0 and worker 1 would draw
+    # the same positions from identical utterances.
+    from torch.utils.data import DataLoader
+
+    features = np.arange(1000, dtype=np.float32).reshape(-1, 1) * np.ones((1, 4), dtype=np.float32)
+    dataset = SegmentDataset([(features, 0)] * 8, segment_length=10, draw_strategy="OS", seed=0)
+    loader = DataLoader(dataset, batch_size=1, num_workers=2, worker_init_fn=trainer._seed_worker_segment_rng,
+                        multiprocessing_context="fork")
+    starts = [int(x[0, 0, 0, 0]) for x, _ in loader]
+    # Batches alternate between the two workers: 0, 1, 0, 1, ...
+    assert starts[0::2] != starts[1::2]

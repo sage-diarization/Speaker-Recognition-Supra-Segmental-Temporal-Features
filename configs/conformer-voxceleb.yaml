@@ -5,13 +5,16 @@ data:
   dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
   segment_duration: 1.0
 
+# Neururer et al. 2024's protocol (Section 3.2, context/src's
+# 04_evaluation/VOX-00_ORIGINAL.json): train on VoxCeleb2 dev, select
+# checkpoints on VoxCeleb1-O (cleaned), report SV on VoxCeleb1-H (cleaned).
+# Remove vox2_root and eval_trial_meta_url for the VoxCeleb1-only substitute
+# (see src/README.md's "Running on VoxCeleb").
 voxceleb:
-  root: "~/.cache/datasets/voxceleb"   # fetched via torchaudio's VoxCeleb1Verification downloader on first use
-  # trial_meta_url must stay the *original* 40-held-out-speaker list -- see
-  # src/data/voxceleb.py's module docstring for why the "hard"/"extended"
-  # VoxSRC lists don't work with this project's VoxCeleb1-only substitute
-  # protocol (train/eval speaker overlap).
-  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+  root: "~/.cache/datasets/voxceleb"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  vox2_root: "~/.cache/datasets/voxceleb2"   # VoxCeleb2 dev as 16 kHz WAV, downloaded + converted manually
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"          # checkpoint selection
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
 
 model:
   type: "Conformer"
@@ -35,8 +38,12 @@ training:
   # nodes) -- /scratch is wiped at job termination, so it can't hold resume
   # state across a requeue.
   checkpoint_every_epochs: 1
-  early_stopping_patience: 10
-  early_stopping_min_improvement_rate: 0.03
+  # As in the paper: the full 128 epochs (no early stopping), best checkpoint
+  # among the 11 evaluated ones (np.linspace(0, 127, 11)).
+  paper_checkpoint_epochs: true
+  # Training segments are read from disk per draw -- match the SLURM jobs'
+  # --cpus-per-task.
+  num_workers: 8
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)

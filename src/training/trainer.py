@@ -1,4 +1,5 @@
 import copy
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -36,6 +37,17 @@ def _weight_decay_param_groups(model, loss_module, weight_decay):
         {"params": decay, "weight_decay": weight_decay},
         {"params": no_decay, "weight_decay": 0.0},
     ]
+
+
+def _seed_worker_segment_rng(worker_id):
+    """DataLoader worker_init_fn: each worker process starts with a copy of
+    the SegmentDataset, including its segment-draw Generator's state, so
+    without reseeding every worker would draw identical segment positions.
+    The worker's torch seed (base seed + worker id, the base seed drawn fresh
+    each epoch from the main process's torch RNG) is unique per worker and
+    epoch, and reproducible on resume since that RNG is checkpointed."""
+    info = torch.utils.data.get_worker_info()
+    info.dataset.rng = np.random.default_rng(info.seed)
 
 
 def _rng_state(dataset, dev_eval_rng):
@@ -217,7 +229,16 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     conservative than the paper's search, never more lenient."""
     model.to(device)
     loss_module.to(device)
-    loader = DataLoader(dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True)
+    num_workers = config.training.num_workers
+    # "fork" (where available) hands workers the dataset copy-on-write --
+    # Python 3.14's forkserver default would instead pickle all of it (1M+
+    # LazyFeatures entries on VoxCeleb2) into every worker, every epoch.
+    fork = num_workers > 0 and "fork" in multiprocessing.get_all_start_methods()
+    loader = DataLoader(
+        dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True,
+        num_workers=num_workers, worker_init_fn=_seed_worker_segment_rng if num_workers > 0 else None,
+        multiprocessing_context="fork" if fork else None,
+    )
     optimizer = torch.optim.Adam(
         _weight_decay_param_groups(model, loss_module, config.optimizer.weight_decay),
         lr=config.optimizer.learning_rate,
