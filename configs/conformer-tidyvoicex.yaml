@@ -1,0 +1,47 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
+
+data:
+  dataset: "TidyVoiceX"    # see src/README.md's "Running on TidyVoiceX" section for the protocol this implies
+  segment_duration: 1.0
+
+tidyvoicex:
+  # An already-extracted TidyVoiceX_ASV (Mozilla Data Collective) tree,
+  # searched for its *_Train/ and *_Dev/ directories -- not auto-downloaded,
+  # see src/data/tidyvoicex.py's module docstring.
+  root: "~/.cache/datasets/tidyx"
+  # The Dev trial list ships separately (tidyvoice_trials.zip); "" searches
+  # root for TidyVocieX_Dev_trialPairs.txt (sic). Absolute or root-relative.
+  trial_file: ""
+
+model:
+  type: "Conformer"
+
+conformer:
+  encoder_dim: 144        # Gulati et al. 2020 Conformer(S) dimension
+  num_layers: 4            # paper uses 16 for LibriSpeech ASR; scaled down for this project's segment lengths
+  num_heads: 4
+  ff_expansion_factor: 4
+  conv_kernel_size: 31     # must be odd; paper's Table 1 rounds this to 32
+  dropout: 0.1
+  use_relative_positional_encoding: true
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  num_epochs: 128
+  batch_size: 100
+  # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
+  # nodes) -- /scratch is wiped at job termination, so it can't hold resume
+  # state across a requeue.
+  checkpoint_every_epochs: 1
+  early_stopping_patience: 10
+  early_stopping_min_improvement_rate: 0.03
+
+wandb:
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

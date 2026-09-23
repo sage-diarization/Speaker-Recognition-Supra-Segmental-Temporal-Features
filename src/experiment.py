@@ -1,5 +1,6 @@
 import argparse
 import functools
+import itertools
 import json
 import os
 import statistics
@@ -13,11 +14,17 @@ from .config import ExperimentConfig
 from .data.aishell4 import Aishell4Corpus
 from .data.dataset import SegmentDataset, featurize_waveform
 from .data.lazy_features import LazyFeatures, expected_frame_count
+from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
 from .data.voxceleb import VoxCelebCorpus
 from .device import resolve_device
 from .evaluation.clustering import best_misclassification_rate
-from .evaluation.verification import equal_error_rate, trial_list_equal_error_rate
+from .evaluation.verification import (
+    IndexedTrials,
+    equal_error_rate,
+    indexed_trial_equal_error_rate,
+    trial_list_equal_error_rate,
+)
 from .models.losses import build_loss
 from .models.registry import build_model
 from .training.trainer import best_checkpoint_path, extract_embeddings, train
@@ -155,6 +162,76 @@ def _lazy_trial_utterances(corpus, transformation):
     return utterances
 
 
+def _lazy_indexed_trial_utterances(corpus, transformation, segment_length):
+    """IndexedTrials analogue of _lazy_trial_utterances (TidyVoiceX's
+    12M-trial Dev list), restricted to trials whose both utterances are
+    longer than one segment: extract_embeddings silently skips shorter ones
+    (Common Voice clips can be under a second, unlike VoxCeleb's >=4s
+    ones), which would otherwise leave their trials unscoreable."""
+    trials = corpus.trials
+    keep = np.zeros(len(trials.utterance_ids), dtype=bool)
+    utterances = []
+    for row, relative_path in enumerate(trials.utterance_ids):
+        full_path = corpus.trial_utterance_path(relative_path)
+        length = expected_frame_count(corpus.raw_sample_count(full_path), transformation)
+        if length <= segment_length:
+            continue
+        keep[row] = True
+        compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, full_path, transformation)
+        utterances.append((LazyFeatures(compute_fn, length), relative_path))
+
+    trial_mask = keep[trials.idx1] & keep[trials.idx2]
+    new_row = (np.cumsum(keep) - 1).astype(np.int32)
+    kept_trials = IndexedTrials(
+        utterance_ids=[utterance_id for utterance_id, kept in zip(trials.utterance_ids, keep) if kept],
+        labels=trials.labels[trial_mask],
+        idx1=new_row[trials.idx1[trial_mask]],
+        idx2=new_row[trials.idx2[trial_mask]],
+    )
+    print(
+        f"==> Trial list: kept {len(kept_trials.labels)}/{len(trials.labels)} trials "
+        f"({int((~keep).sum())} utterances too short for a {segment_length}-frame segment)"
+    )
+    return utterances, kept_trials
+
+
+def _holdout_dev_trials(dev_utterances, segment_length):
+    """Turns TRAIN's held-out dev utterances (see _lazy_featurize_train_dev_split)
+    into a small trial list for periodic checkpoint selection, instead of
+    equal_error_rate's exhaustive all-vs-all pairing -- at TidyVoiceX's 3,666
+    training speakers that's ~27M pairs per dev eval. Per speaker: every
+    same-speaker pair of its held-out utterances (target), plus each one
+    paired with the next speaker's same-position one (nontarget) -- 1 target
+    to 2 nontarget per speaker at the default dev_holdout_per_speaker=2,
+    matching the official Dev list's ratio. Returned utterances are relabeled
+    by row index, which the returned IndexedTrials refers to."""
+    kept = [(features, speaker) for features, speaker in dev_utterances if features.length > segment_length]
+    rows_by_speaker = {}
+    for row, (_, speaker) in enumerate(kept):
+        rows_by_speaker.setdefault(speaker, []).append(row)
+    speakers = sorted(rows_by_speaker)
+    labels, idx1, idx2 = [], [], []
+    for i, speaker in enumerate(speakers):
+        rows = rows_by_speaker[speaker]
+        for row1, row2 in itertools.combinations(rows, 2):
+            labels.append(1)
+            idx1.append(row1)
+            idx2.append(row2)
+        if len(speakers) > 1:
+            for row1, row2 in zip(rows, rows_by_speaker[speakers[(i + 1) % len(speakers)]]):
+                labels.append(0)
+                idx1.append(row1)
+                idx2.append(row2)
+    utterances = [(features, row) for row, (features, _) in enumerate(kept)]
+    trials = IndexedTrials(
+        utterance_ids=list(range(len(kept))),
+        labels=np.array(labels, dtype=np.int8),
+        idx1=np.array(idx1, dtype=np.int32),
+        idx2=np.array(idx2, dtype=np.int32),
+    )
+    return utterances, trials
+
+
 def _sweep_key(config, train_strategy):
     return f"{config.model.type}-{config.data.dataset.lower()}-{train_strategy}"
 
@@ -252,6 +329,27 @@ def run_experiment(config, corpus=None, strategies=None):
         # this same function -- no need to route dev-eval through this
         # module's reference, same as TIMIT.
         dev_eval_fn = None
+    elif dataset_name == "tidyvoicex":
+        # VoxCeleb-shaped (see src/data/tidyvoicex.py): train on every Train
+        # speaker, score SV over the official Dev trial list. Unlike VoxCeleb,
+        # checkpoint selection/early stopping never sees the evaluation
+        # trials: dev EER comes from utterances held out of TRAIN (as for
+        # TIMIT/AISHELL-4), scored over a small generated trial list since
+        # exhaustive pairing doesn't scale to 3,666 speakers. SC is omitted
+        # -- the dataset's terms permit only verification use.
+        corpus = corpus or TidyVoiceXCorpus(config)
+        train_utterances, dev_pool, train_label_map = _lazy_featurize_train_dev_split(
+            corpus, transformation, config.evaluation.dev_holdout_per_speaker
+        )
+        dev_utterances, dev_trials = _holdout_dev_trials(dev_pool, segment_length)
+        sv_eval_utterances, eval_trials = _lazy_indexed_trial_utterances(corpus, transformation, segment_length)
+        sc_utterances = None
+
+        def sv_eval_fn(embeddings, utterance_ids):
+            return indexed_trial_equal_error_rate(embeddings, utterance_ids, eval_trials)
+
+        def dev_eval_fn(embeddings, utterance_ids):
+            return indexed_trial_equal_error_rate(embeddings, utterance_ids, dev_trials)
     else:
         corpus = corpus or TimitCorpus(config.data)
         train_utterances, dev_utterances, train_label_map = _featurize_train_dev_split(

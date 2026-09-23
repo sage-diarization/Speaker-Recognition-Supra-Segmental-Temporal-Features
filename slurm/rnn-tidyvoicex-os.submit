@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --time=1440
+#SBATCH --job-name=sst/rnn-tidyvoicex-os
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+source slurm/install.submit
+source slurm/secrets.submit
+
+echo "Start experiment..."
+wandb login $WANDB_API_KEY
+python3 -u -m src.experiment \
+  --config configs/rnn-tidyvoicex.yaml \
+  --strategy OS
+
+echo "Done."

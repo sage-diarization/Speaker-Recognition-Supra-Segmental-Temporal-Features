@@ -38,7 +38,7 @@ class TransformationConfig:
 
 @dataclass
 class DataConfig:
-    # "TIMIT" (default), "VoxCeleb", or "AISHELL4" -- selects the corpus +
+    # "TIMIT" (default), "VoxCeleb", "AISHELL4", or "TidyVoiceX" -- selects the corpus +
     # evaluation task set in src/experiment.py, and is folded into wandb run
     # names/tags so runs from different datasets are distinguishable at a
     # glance.
@@ -82,6 +82,21 @@ class Aishell4Config:
     already extracted it."""
 
     root: str = ""
+
+
+@dataclass
+class TidyVoiceXConfig:
+    """Local, already-extracted TidyVoiceX_ASV (Mozilla Data Collective
+    dataset cmihtsewu023so207xot1iqqw) directory tree, see
+    src/data/tidyvoicex.py's module docstring. Its download needs a Data
+    Collective API key, so this project doesn't auto-fetch it."""
+
+    # Searched (breadth-first) for its *_Train/ and *_Dev/ directories.
+    root: str = "~/.cache/datasets/tidyx"
+    # The Dev trial list (TidyVocieX_Dev_trialPairs.txt, from the separately
+    # distributed tidyvoice_trials.zip) -- absolute, or relative to root.
+    # "" searches root for a *trialPairs*.txt file.
+    trial_file: str = ""
 
 
 @dataclass
@@ -212,6 +227,7 @@ class ExperimentConfig:
     data: DataConfig = field(default_factory=DataConfig)
     voxceleb: VoxCelebConfig = field(default_factory=VoxCelebConfig)
     aishell4: Aishell4Config = field(default_factory=Aishell4Config)
+    tidyvoicex: TidyVoiceXConfig = field(default_factory=TidyVoiceXConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     conformer: ConformerConfig = field(default_factory=ConformerConfig)
     rnn: RNNConfig = field(default_factory=RNNConfig)
@@ -242,6 +258,7 @@ class ExperimentConfig:
             ("data", DataConfig),
             ("voxceleb", VoxCelebConfig),
             ("aishell4", Aishell4Config),
+            ("tidyvoicex", TidyVoiceXConfig),
             ("model", ModelConfig),
             ("conformer", ConformerConfig),
             ("rnn", RNNConfig),

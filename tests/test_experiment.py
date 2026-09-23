@@ -9,9 +9,11 @@ import soundfile as sf
 from src import experiment as experiment_module
 from src.config import ExperimentConfig
 from src.data.aishell4 import Aishell4Corpus
+from src.data.tidyvoicex import TidyVoiceXCorpus
 from src.experiment import RunStatistics, STRATEGIES, build_sc_utterances, format_results, run_experiment
 from tests.conftest import make_synthetic_waveform
 from tests.test_aishell4 import _write_session
+from tests.test_tidyvoicex import _write_wav, make_tidyvoicex_root
 
 
 class _StubCorpus:
@@ -685,3 +687,94 @@ def test_run_experiment_aishell4_wandb_tags_and_name_identify_the_dataset(monkey
     assert names == ["CNN-aishell4-OS", "CNN-aishell4-SS", "CNN-aishell4-SU"]
     for _, tags in captured:
         assert "aishell4" in tags
+
+
+def _make_tidyvoicex_corpus(tmp_path, short_dev_utterance=False):
+    """A real (tiny, on-disk) TidyVoiceX_ASV-shaped tree + trial list, so
+    run_experiment's TidyVoiceX path is exercised against the actual
+    src/data/tidyvoicex.py loader rather than a stub."""
+    train = {f"id00000{s}": [f"en/en_{s}{i}.wav" for i in range(2)] + [f"de/de_{s}{i}.wav" for i in range(2)] for s in range(3)}
+    dev = {f"id01400{s}": ["en/en_a.wav", "fr/fr_b.wav"] for s in range(3)}
+    trial_lines = []
+    for s in range(3):
+        trial_lines.append(f"1 id01400{s}/en/en_a.wav id01400{s}/fr/fr_b.wav")
+        trial_lines.append(f"0 id01400{s}/en/en_a.wav id01400{(s + 1) % 3}/en/en_a.wav")
+    root = make_tidyvoicex_root(tmp_path / "tidyx", train=train, dev=dev, trial_lines=trial_lines)
+    if short_dev_utterance:
+        _write_wav(root / "TidyVoiceX_ASV" / "TidyVoiceX_Dev" / "id014000" / "it" / "it_c.wav", 0.5)
+        with open(root / "TidyVocieX_Dev_trialPairs.txt", "a") as f:
+            f.write("1 id014000/en/en_a.wav id014000/it/it_c.wav\n")
+
+    config = ExperimentConfig()
+    config.tidyvoicex.root = str(root)
+    return TidyVoiceXCorpus(config)
+
+
+def test_lazy_indexed_trial_utterances_drops_trials_with_too_short_utterances(tmp_path):
+    config = ExperimentConfig()
+    corpus = _make_tidyvoicex_corpus(tmp_path, short_dev_utterance=True)
+    segment_length = config.data.segment_length(config.transformation)
+
+    utterances, trials = experiment_module._lazy_indexed_trial_utterances(corpus, config.transformation, segment_length)
+
+    assert len(corpus.trials.labels) == 7
+    assert len(trials.labels) == 6
+    assert "id014000/it/it_c.wav" not in trials.utterance_ids
+    assert [utterance_id for _, utterance_id in utterances] == trials.utterance_ids
+    # Re-indexed trials still point at the same utterance pairs as the originals.
+    original = {(corpus.trials.utterance_ids[a], corpus.trials.utterance_ids[b]) for a, b in zip(corpus.trials.idx1, corpus.trials.idx2)}
+    kept = {(trials.utterance_ids[a], trials.utterance_ids[b]) for a, b in zip(trials.idx1, trials.idx2)}
+    assert kept <= original
+
+
+def test_holdout_dev_trials_pair_within_and_across_neighbouring_speakers():
+    class _Features:
+        def __init__(self, length):
+            self.length = length
+
+    segment_length = 10
+    dev_pool = [(_Features(20), 0), (_Features(20), 0), (_Features(20), 1), (_Features(20), 1), (_Features(5), 1)]
+
+    utterances, trials = experiment_module._holdout_dev_trials(dev_pool, segment_length)
+
+    assert [label for _, label in utterances] == [0, 1, 2, 3]  # too-short entry dropped, relabeled by row
+    pairs = sorted(zip(trials.labels.tolist(), trials.idx1.tolist(), trials.idx2.tolist()))
+    assert pairs == [(0, 0, 2), (0, 1, 3), (0, 2, 0), (0, 3, 1), (1, 0, 1), (1, 2, 3)]
+
+
+def test_run_experiment_tidyvoicex_end_to_end_skips_sc_and_uses_trial_list_eval(monkeypatch, tmp_path):
+    captured = []
+    real_start_run = experiment_module.tracking.start_run
+
+    def _spy_start_run(wandb_config, name, tags, run_config, run_id=None):
+        captured.append((name, tags))
+        return real_start_run(wandb_config, name, tags, run_config, run_id=run_id)
+
+    monkeypatch.setattr(experiment_module.tracking, "start_run", _spy_start_run)
+
+    config = ExperimentConfig()
+    config.data.dataset = "TidyVoiceX"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+    config.training.checkpoint_dir = str(tmp_path / "checkpoints")
+
+    corpus = _make_tidyvoicex_corpus(tmp_path)
+    results = run_experiment(config, corpus=corpus)
+
+    assert set(results.keys()) == {"SV", "SV_paper_comparable"}
+    for train_strategy in STRATEGIES:
+        for test_strategy in STRATEGIES:
+            stats = results["SV"][(train_strategy, test_strategy)]
+            assert isinstance(stats, RunStatistics)
+            assert 0.0 <= stats.mean <= 1.0
+
+    report = format_results(results)
+    assert "SV (EER)" in report
+    assert "SC (MR)" not in report
+
+    names = [name for name, _ in captured]
+    assert names == ["CNN-tidyvoicex-OS", "CNN-tidyvoicex-SS", "CNN-tidyvoicex-SU"]
+    for _, tags in captured:
+        assert "tidyvoicex" in tags

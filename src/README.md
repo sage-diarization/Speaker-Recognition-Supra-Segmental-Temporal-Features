@@ -50,12 +50,14 @@ reports speaker verification EER and speaker clustering MR as mean/SD over
 those runs in a 3x3 grid (reproducing the structure and mean/SD reporting of
 the paper's Tables 1/2, not the exact numbers — the original list-file
 splits for dev/final partitions aren't recoverable from the reference repo).
-On VoxCeleb (`data.dataset: "VoxCeleb"`, see "Running on VoxCeleb" below) and
-AISHELL-4 (`data.dataset: "AISHELL4"`, see "Running on AISHELL-4" below),
+On VoxCeleb (`data.dataset: "VoxCeleb"`, see "Running on VoxCeleb" below),
+AISHELL-4 (`data.dataset: "AISHELL4"`, see "Running on AISHELL-4" below) and
+TidyVoiceX (`data.dataset: "TidyVoiceX"`, see "Running on TidyVoiceX" below),
 only SV/EER is reported, matching the paper's Table 3 and its stated reason
 for omitting SC on VoxCeleb ("experiments in Section 2 led to similar
 conclusions" for both tasks) — extended here to AISHELL-4 for the same
-reason (see "Running on AISHELL-4" below).
+reason (see "Running on AISHELL-4" below), and to TidyVoiceX because its
+terms permit verification use only.
 
 Each run evaluates dev-set SV EER after *every* epoch and keeps the
 best-scoring checkpoint's weights, matching `context/src`'s `EvalCallback` +
@@ -206,6 +208,47 @@ Parsing the TextGrid annotations uses the
 existing preference for standardized libraries over custom fetchers/parsers
 (the same reasoning `src/data/voxceleb.py`'s module docstring gives for
 using torchaudio's own VoxCeleb downloader).
+
+## Running on TidyVoiceX
+
+Set `data.dataset: "TidyVoiceX"` (see `configs/{cnn,rnn,resnet,conformer}-tidyvoicex.yaml`
+and the matching `slurm/*-tidyvoicex-{os,ss}.submit` jobs) to run against
+TidyVoiceX_ASV, the multilingual Common Voice derivative of the TidyVoice
+2026 cross-lingual speaker-verification challenge
+([Mozilla Data Collective](https://mozilladatacollective.com/datasets/cmihtsewu023so207xot1iqqw),
+reference recipe:
+[wespeaker `examples/tidyvocie`](https://github.com/areffarhadi/wespeaker/tree/master/examples/tidyvocie)).
+Its download needs a Data Collective API key, so it isn't auto-fetched:
+
+1. Download and extract the dataset archive into `tidyvoicex.root`
+   (default `~/.cache/datasets/tidyx`). Its `TidyVoiceX_Train/` and
+   `TidyVoiceX_Dev/` directories (`<speaker>/<language>/<utterance>.wav`)
+   are located at whatever nesting depth they ended up in.
+2. The Dev trial list is **not** part of that archive: download
+   `tidyvoice_trials.zip` (linked from the challenge site / the recipe's
+   `local/download_tidyvoice.sh`) and unzip its
+   `TidyVocieX_Dev_trialPairs.txt` (sic) anywhere under `tidyvoicex.root`, or
+   set `tidyvoicex.trial_file` to its path.
+
+The protocol is VoxCeleb-shaped: training uses all 3,666 Train speakers, and
+SV is scored over the official Dev trial list (808 speakers disjoint from
+Train; 12M trials, 1:2 target:nontarget, half same-language/half
+cross-language). There are three differences from the VoxCeleb path:
+
+- **Checkpoint selection never sees the evaluation trials.**
+  `evaluation.dev_holdout_per_speaker` utterances per Train speaker are held
+  out of training (as for TIMIT/AISHELL-4) and scored over a small generated
+  trial list (each speaker's held-out pair as target, paired with the next
+  speaker's as nontarget), because exhaustive all-vs-all pairing over 3,666
+  speakers would be ~27M pairs per epoch.
+- **Short clips are dropped.** Common Voice clips can be shorter than one
+  training segment, which `extract_embeddings` can't embed. Trials referencing
+  such clips are excluded from scoring, and the count is printed at
+  startup.
+- **Chunked scoring.** The 12M trials are held as index arrays
+  (`IndexedTrials`) and scored in chunks by
+  `indexed_trial_equal_error_rate`. Parsing takes about 7s and scoring
+  about 15s, at roughly 1.3 GB peak.
 
 ## Running the experiment
 

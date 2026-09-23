@@ -1,4 +1,5 @@
 import itertools
+from typing import NamedTuple
 
 import numpy as np
 from scipy.interpolate import interp1d
@@ -49,5 +50,39 @@ def trial_list_equal_error_rate(embeddings, utterance_ids, trial_pairs):
     embeddings2 = np.stack([embedding_by_id[utterance_id2] for _, _, utterance_id2 in trial_pairs])
     scores = cosine_similarity(embeddings1, embeddings2)
     fpr, tpr, _ = roc_curve(labels, scores, pos_label=1)
+    eer = brentq(lambda x: 1.0 - x - interp1d(fpr, tpr)(x), 0.0, 1.0)
+    return float(eer)
+
+
+class IndexedTrials(NamedTuple):
+    """A trial list stored as parallel arrays over a table of unique
+    utterance ids, rather than trial_list_equal_error_rate's list of
+    (label, id1, id2) string tuples -- TidyVoiceX's official Dev list has 12M
+    trials over only ~59k utterances, which as Python tuples alone would cost
+    several GB of RAM."""
+
+    utterance_ids: list
+    labels: np.ndarray
+    idx1: np.ndarray
+    idx2: np.ndarray
+
+
+def indexed_trial_equal_error_rate(embeddings, utterance_ids, trials, chunk_size=200_000):
+    """Same EER as trial_list_equal_error_rate, but over IndexedTrials and
+    scored chunk_size trials at a time: gathering both sides' embeddings for
+    all of TidyVoiceX's 12M trials at once (as trial_list_equal_error_rate
+    does) would need ~49 GB at 512 dims.
+
+    Every id in trials.utterance_ids must be present in `utterance_ids`
+    (extract_embeddings silently skips utterances no longer than one
+    segment, so callers must drop trials referencing those beforehand)."""
+    row_by_id = {utterance_id: row for row, utterance_id in enumerate(utterance_ids)}
+    order = np.array([row_by_id[utterance_id] for utterance_id in trials.utterance_ids])
+    normed = embeddings[order] / np.linalg.norm(embeddings[order], axis=-1, keepdims=True)
+    scores = np.empty(len(trials.labels), dtype=np.float32)
+    for start in range(0, len(scores), chunk_size):
+        end = start + chunk_size
+        scores[start:end] = np.einsum("ij,ij->i", normed[trials.idx1[start:end]], normed[trials.idx2[start:end]])
+    fpr, tpr, _ = roc_curve(trials.labels, scores, pos_label=1)
     eer = brentq(lambda x: 1.0 - x - interp1d(fpr, tpr)(x), 0.0, 1.0)
     return float(eer)

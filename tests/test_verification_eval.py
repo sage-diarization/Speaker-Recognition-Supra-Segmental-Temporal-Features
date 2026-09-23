@@ -2,9 +2,11 @@ import numpy as np
 import pytest
 
 from src.evaluation.verification import (
+    IndexedTrials,
     build_verification_pairs,
     cosine_similarity,
     equal_error_rate,
+    indexed_trial_equal_error_rate,
     trial_list_equal_error_rate,
 )
 
@@ -90,3 +92,27 @@ def test_trial_list_eer_only_looks_up_ids_referenced_by_the_trial_pairs():
 
     eer = trial_list_equal_error_rate(embeddings, utterance_ids, trial_pairs)
     assert eer == pytest.approx(0.0)
+
+
+def test_indexed_trial_eer_matches_trial_list_eer_across_chunk_boundaries():
+    # Same trials scored both ways; chunk_size=7 forces several partial chunks.
+    rng = np.random.default_rng(0)
+    num_utterances = 30
+    embeddings = rng.normal(0, 1, size=(num_utterances, 8))
+    utterance_ids = [f"u{i}" for i in range(num_utterances)]
+    speaker_of = rng.integers(0, 5, size=num_utterances)
+    pairs = [(i, j) for i in range(num_utterances) for j in range(i + 1, num_utterances)][:100]
+    trial_pairs = [(int(speaker_of[i] == speaker_of[j]), utterance_ids[i], utterance_ids[j]) for i, j in pairs]
+
+    # IndexedTrials' own utterance order deliberately differs from the embeddings' row order.
+    trial_ids = list(reversed(utterance_ids))
+    row = {utterance_id: k for k, utterance_id in enumerate(trial_ids)}
+    trials = IndexedTrials(
+        utterance_ids=trial_ids,
+        labels=np.array([label for label, _, _ in trial_pairs]),
+        idx1=np.array([row[a] for _, a, _ in trial_pairs]),
+        idx2=np.array([row[b] for _, _, b in trial_pairs]),
+    )
+
+    expected = trial_list_equal_error_rate(embeddings, utterance_ids, trial_pairs)
+    assert indexed_trial_equal_error_rate(embeddings, utterance_ids, trials, chunk_size=7) == pytest.approx(expected, abs=1e-6)
