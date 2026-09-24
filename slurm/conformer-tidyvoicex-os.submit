@@ -3,7 +3,7 @@
 #SBATCH --job-name=sst/conformer-tidyvoicex-os
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:3
+#SBATCH --gres=gpu:1
 #SBATCH --account=cai_cv
 #SBATCH --partition=gpu_top
 #SBATCH --exclude=irvine
