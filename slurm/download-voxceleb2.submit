@@ -42,8 +42,13 @@ fi
 # in memory and got the download OOM-killed on the cluster.
 export HF_HUB_DISABLE_XET=1
 
-SEVEN_ZIP="$(command -v 7zz || command -v 7z || command -v 7za || true)"
-[ -n "$SEVEN_ZIP" ] || pip3 install -q py7zr multivolumefile
+SEVEN_ZIP="$(command -v 7zz || command -v 7z || command -v 7za || command -v 7zzs || true)"
+if [ -z "$SEVEN_ZIP" ]; then
+  # No 7-Zip on the node: fetch the official static build (py7zr gets
+  # OOM-killed on this solid archive of ~1.1M files).
+  curl -fsSL https://www.7-zip.org/a/7z2602-linux-x64.tar.xz | tar -xJ -C "$VENV_PATH/bin" 7zzs
+  SEVEN_ZIP="$VENV_PATH/bin/7zzs"
+fi
 FFMPEG="$(command -v ffmpeg || true)"
 if [ -z "$FFMPEG" ]; then
   pip3 install -q imageio-ffmpeg
@@ -58,19 +63,9 @@ if [ ! -f "$ROOT/.extracted" ]; then
     --repo-type dataset --local-dir "$DOWNLOAD" --max-workers 6
 
   echo "Extracting..."
-  if [ -n "$SEVEN_ZIP" ]; then
-    "$SEVEN_ZIP" x -y -mmt="$CPUS" -o"$ROOT" "$DOWNLOAD/aac.7z.001"
-  else
-    python3 - "$DOWNLOAD/aac.7z" "$ROOT" <<'EOF'
-import sys
-
-import multivolumefile
-import py7zr
-
-with multivolumefile.open(sys.argv[1], mode="rb") as volumes, py7zr.SevenZipFile(volumes, "r") as archive:
-    archive.extractall(path=sys.argv[2])
-EOF
-  fi
+  # LZMA2 with a 32 MB dictionary: a few threads keep memory far below
+  # --mem (multi-threaded decoding buffers grow with the thread count).
+  "$SEVEN_ZIP" x -y -mmt=4 -o"$ROOT" "$DOWNLOAD/aac.7z.001"
   touch "$ROOT/.extracted"
   rm -f "$DOWNLOAD"/aac.7z.*
 fi
