@@ -1,3 +1,5 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import soundfile as sf
@@ -55,8 +57,22 @@ class VoxCelebCorpus:
             self.trial_pairs = _download_trial_pairs(root, voxceleb.eval_trial_meta_url)
 
         self._wav_root = root / "wav"
+        vox1_counts = _wav_index(self._wav_root, root / _INDEX_FILE, "VoxCeleb1")
+        self._sample_counts = {str(self._wav_root / path): count for path, count in vox1_counts.items()}
         if voxceleb.vox2_root:
-            self._train_utterances = _scan_voxceleb2(Path(voxceleb.vox2_root).expanduser())
+            vox2_root = Path(voxceleb.vox2_root).expanduser()
+            vox2_counts = _wav_index(vox2_root, vox2_root / _INDEX_FILE, "VoxCeleb2")
+            if not vox2_counts:
+                hint = ""
+                if next(vox2_root.rglob("*.m4a"), None) is not None:
+                    hint = " -- found .m4a files instead: VoxCeleb2 ships as AAC, convert it to 16 kHz mono WAV first (e.g. with ffmpeg)"
+                raise RuntimeError(f"no VoxCeleb2 .wav files found under {vox2_root}{hint}")
+            self._sample_counts.update({str(vox2_root / path): count for path, count in vox2_counts.items()})
+            train_utterances = {}
+            for path in sorted(vox2_counts):
+                # <speaker>/<video>/<utterance>.wav, at any depth under vox2_root.
+                train_utterances.setdefault(Path(path).parent.parent.name, []).append(vox2_root / path)
+            self._train_utterances = train_utterances
             return
 
         eval_speakers = {
@@ -67,11 +83,11 @@ class VoxCelebCorpus:
         }
 
         train_utterances = {}
-        for wav_path in sorted(self._wav_root.glob("*/*/*.wav")):
-            speaker_id = wav_path.relative_to(self._wav_root).parts[0]
-            if speaker_id in eval_speakers:
+        for path in sorted(vox1_counts):
+            parts = Path(path).parts  # <speaker>/<video>/<utterance>.wav
+            if len(parts) != 3 or parts[0] in eval_speakers:
                 continue
-            train_utterances.setdefault(speaker_id, []).append(wav_path)
+            train_utterances.setdefault(parts[0], []).append(self._wav_root / path)
         if not train_utterances:
             raise RuntimeError(
                 f"no non-evaluation speakers found under {self._wav_root} -- "
@@ -90,9 +106,9 @@ class VoxCelebCorpus:
     def trial_utterance_path(self, relative_path):
         return self._wav_root / relative_path
 
-    @staticmethod
-    def raw_sample_count(path):
-        return sf.info(str(path)).frames
+    def raw_sample_count(self, path):
+        # From the cached index (see _wav_index), not a header read per file.
+        return self._sample_counts[str(path)]
 
     @staticmethod
     def load_waveform(path):
@@ -113,15 +129,67 @@ def _download_trial_pairs(root, meta_url):
     return [(label, path1, path2) for label, path1, path2 in verification._flist]
 
 
-def _scan_voxceleb2(root):
-    """{speaker_id: [wav paths]} over a VoxCeleb2 dev tree laid out as
-    <speaker>/<video>/<utterance>.wav at any nesting depth under root."""
-    utterances = {}
-    for wav_path in sorted(root.rglob("*.wav")):
-        utterances.setdefault(wav_path.parent.parent.name, []).append(wav_path)
-    if not utterances:
-        hint = ""
-        if next(root.rglob("*.m4a"), None) is not None:
-            hint = " -- found .m4a files instead: VoxCeleb2 ships as AAC, convert it to 16 kHz mono WAV first (e.g. with ffmpeg)"
-        raise RuntimeError(f"no VoxCeleb2 .wav files found under {root}{hint}")
-    return utterances
+# Cached next to each dataset: one line "<relative path>\t<sample count>" per
+# .wav. Delete it to rebuild the index after the dataset changes.
+_INDEX_FILE = ".sst-wav-index.tsv"
+# Directory listings and header reads mostly wait on the (network) file
+# system, so threads parallelize them well despite the GIL.
+_INDEX_THREADS = 64
+
+
+def _wav_index(root, cache_path, name):
+    """{path relative to root: sample count} of every .wav under root. The
+    first call lists root and reads each file's header in parallel (on a
+    network file system, ~1.2M files one at a time took most of an hour),
+    then writes cache_path; later calls read just that file. An empty
+    result isn't cached, so a dataset added later is still picked up."""
+    if cache_path.exists():
+        with open(cache_path) as f:
+            index = {path: int(count) for path, count in (line.rstrip("\n").split("\t") for line in f)}
+        print(f"==> {name}: {len(index)} utterances (cached index {cache_path})")
+        return index
+
+    print(f"==> {name}: indexing {root} (first run only; cached in {cache_path})...")
+    with ThreadPoolExecutor(_INDEX_THREADS) as pool:
+        paths = _list_wavs(root, pool)
+        print(f"==> {name}: found {len(paths)} .wav files, reading their lengths...")
+        counts = []
+        for i, count in enumerate(pool.map(lambda path: sf.info(path).frames, paths, chunksize=256), start=1):
+            counts.append(count)
+            if i % 100_000 == 0:
+                print(f"==> {name}: {i}/{len(paths)} lengths read")
+    index = {os.path.relpath(path, root): count for path, count in zip(paths, counts)}
+    if index:
+        # Per-process temp file: jobs starting together (e.g. OS and SS) may
+        # both build the index; os.replace keeps one complete copy.
+        tmp_path = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
+        with open(tmp_path, "w") as f:
+            f.writelines(f"{path}\t{count}\n" for path, count in index.items())
+        os.replace(tmp_path, cache_path)
+    return index
+
+
+def _list_wavs(root, pool):
+    """Every .wav path under root, listing each directory level in parallel."""
+    wavs, directories = [], [str(root)]
+    while directories:
+        next_directories = []
+        for subdirectories, files in pool.map(_list_directory, directories):
+            next_directories.extend(subdirectories)
+            wavs.extend(files)
+        directories = next_directories
+    return wavs
+
+
+def _list_directory(directory):
+    subdirectories, wavs = [], []
+    try:
+        entries = list(os.scandir(directory))
+    except FileNotFoundError:  # e.g. VoxCeleb1's wav/ before it's downloaded
+        return subdirectories, wavs
+    for entry in entries:
+        if entry.is_dir():
+            subdirectories.append(entry.path)
+        elif entry.name.endswith(".wav"):
+            wavs.append(entry.path)
+    return subdirectories, wavs

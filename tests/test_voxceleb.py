@@ -174,3 +174,38 @@ def test_load_samples_reads_only_the_requested_range(voxceleb_root):
     path = corpus.utterance_paths("TRAIN", "id10003")[0]
     full, _ = corpus.load_waveform(path)
     np.testing.assert_array_equal(corpus.load_samples(path, 1000, 5000), full[1000:5000])
+
+
+def test_wav_index_is_built_once_then_read_from_its_cache(voxceleb_root, tmp_path, monkeypatch):
+    monkeypatch.setattr(voxceleb_module, "VoxCeleb1Verification", _PerUrlVoxCeleb1Verification)
+    vox2_root = tmp_path / "vox2"
+    _write_wav(vox2_root / "aac" / "id00012" / "vidA" / "00001.wav", duration_s=1.5)
+    _write_wav(vox2_root / "aac" / "id00015" / "vidB" / "00007.wav", duration_s=2.0)
+    config = ExperimentConfig()
+    config.voxceleb.root = str(voxceleb_root)
+    config.voxceleb.vox2_root = str(vox2_root)
+    config.voxceleb.trial_meta_url = "https://example.invalid/o.txt"
+    config.voxceleb.eval_trial_meta_url = "https://example.invalid/h.txt"
+
+    first = VoxCelebCorpus(config)
+    assert (vox2_root / voxceleb_module._INDEX_FILE).exists()
+    assert (voxceleb_root / voxceleb_module._INDEX_FILE).exists()
+
+    def _no_header_reads(path):
+        raise AssertionError(f"header read despite cached index: {path}")
+
+    monkeypatch.setattr(voxceleb_module.sf, "info", _no_header_reads)
+    second = VoxCelebCorpus(config)
+
+    assert second.speakers("TRAIN") == first.speakers("TRAIN") == ["id00012", "id00015"]
+    train_path = second.utterance_paths("TRAIN", "id00012")[0]
+    assert train_path == vox2_root / "aac" / "id00012" / "vidA" / "00001.wav"
+    assert second.raw_sample_count(train_path) == 24000
+    trial_path = second.trial_utterance_path("id10001/clipA/00001.wav")
+    assert second.raw_sample_count(trial_path) == 32000
+
+
+def test_empty_wav_index_is_not_cached(tmp_path):
+    cache_path = tmp_path / voxceleb_module._INDEX_FILE
+    assert voxceleb_module._wav_index(tmp_path / "missing", cache_path, "test") == {}
+    assert not cache_path.exists()

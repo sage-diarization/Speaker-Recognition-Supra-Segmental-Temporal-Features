@@ -148,9 +148,11 @@ every frame of it. Training reads only the samples behind each drawn segment
 `featurize_frame_range`; equal to featurizing the whole file then slicing,
 up to float32 rounding) rather than decoding whole files, spread over
 `training.num_workers` DataLoader workers (8 in the VoxCeleb configs, matched
-by the SLURM jobs' `--cpus-per-task`). Startup still probes every training
-file's header once for its length, which on a network file system can take
-a while for VoxCeleb2's ~1.09M files. The full run is longer than the SLURM
+by the SLURM jobs' `--cpus-per-task`). Every utterance's length is needed
+upfront; the first run lists both datasets and reads each file's header in
+parallel (with progress output), then caches the result as
+`.sst-wav-index.tsv` in `vox2_root` and `voxceleb.root`, so later runs start
+in seconds. Delete those files if a dataset changes. The full run is longer than the SLURM
 jobs' 24h limit, so resubmit the job: it resumes from `checkpoint_every_epochs: 1`.
 
 **VoxCeleb1-only substitute.** Removing `vox2_root` and `eval_trial_meta_url`

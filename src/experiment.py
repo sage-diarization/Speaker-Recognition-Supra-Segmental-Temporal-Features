@@ -344,6 +344,10 @@ def run_experiment(config, corpus=None, strategies=None):
             dev_utterances = sv_eval_utterances
         else:
             dev_utterances = _lazy_trial_utterances(corpus, corpus.dev_trial_pairs, transformation)
+        print(
+            f"==> VoxCeleb: {len(train_utterances)} training utterances of {len(train_label_map)} speakers, "
+            f"{len(dev_utterances)} selection / {len(sv_eval_utterances)} evaluation trial utterances"
+        )
         sc_utterances = None
 
         def sv_eval_fn(embeddings, utterance_ids):
