@@ -7,6 +7,7 @@ from .features import apply_drc, compute_linear_spectrogram, compute_mel_spectro
 from .lazy_features import resolve_features, utterance_length
 from .segments import DRAW_STRATEGIES
 from .augment import FBACorruptor
+from ..config import FBACorruptionConfig
 
 
 def featurize_waveform(waveform, transformation_config):
