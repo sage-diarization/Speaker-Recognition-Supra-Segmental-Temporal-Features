@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --time=1440
-#SBATCH --job-name=sst/conformer-tidyvoicex-os
+#SBATCH --job-name=sst/conformer-tidyvoicex-os/fba-corrupt-strong
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -17,7 +17,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/conformer-tidyvoicex.yaml \
+	--config configs/conformer-tidyvoicex-fba-corrupt-strong.yaml \
 	--strategy OS
 
 echo "Done."
