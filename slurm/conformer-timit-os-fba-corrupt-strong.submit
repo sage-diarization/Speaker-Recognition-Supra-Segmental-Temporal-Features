@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --time=360
-#SBATCH --job-name=sst/conformer-timit-os/fba-corrupt
+#SBATCH --job-name=sst/conformer-timit-os/fba-corrupt-strong
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -16,7 +16,7 @@ source slurm/secrets.submit
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \
-	--config configs/conformer-timit-fba-corrupt.yaml \
+	--config configs/conformer-timit-fba-corrupt-strong.yaml \
 	--strategy OS
 
 echo "Done."

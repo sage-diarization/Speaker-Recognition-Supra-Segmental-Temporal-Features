@@ -270,10 +270,10 @@ def _holdout_dev_trials(dev_utterances, segment_length):
 
 
 def _sweep_key(config, train_strategy):
-    sweep_postfix = ""
-    if config.training.fba_corruption:
-        sweep_postfix += "-fba-corrupt"
-    return f"{config.model.type}-{config.data.dataset.lower()}-{train_strategy}{sweep_postfix}"
+    run_postfix = ""
+    if config.wandb.run_postfix:
+        run_postfix = f"-{config.wandb.run_postfix}"
+    return f"{config.model.type}-{config.data.dataset.lower()}-{train_strategy}{run_postfix}"
 
 
 def _sweep_dir(config, train_strategy):
