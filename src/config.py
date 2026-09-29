@@ -274,6 +274,7 @@ class WandbConfig:
     enabled: bool = False
     project: str = "speaker-verification"
     entity: str = ""
+    run_postfix: str = ""
     # "online" needs network+login; "offline" writes locally for a later `wandb sync`
     # (useful on SLURM compute nodes without internet); "disabled" is a full no-op.
     mode: str = "online"
