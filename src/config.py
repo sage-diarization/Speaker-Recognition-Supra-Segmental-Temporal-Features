@@ -38,7 +38,7 @@ class TransformationConfig:
 
 @dataclass
 class DataConfig:
-    # "TIMIT" (default), "VoxCeleb", "AISHELL4", or "TidyVoiceX" -- selects the corpus +
+    # "TIMIT" (default), "VoxCeleb", or "TidyVoiceX" -- selects the corpus +
     # evaluation task set in src/experiment.py, and is folded into wandb run
     # names/tags so runs from different datasets are distinguishable at a
     # glance.
@@ -81,16 +81,7 @@ class VoxCelebConfig:
     vox2_root: str = ""
 
 
-@dataclass
-class Aishell4Config:
-    """Local, already-extracted AISHELL-4 (openslr.org/111) directory tree
-    (see src/data/aishell4.py's module docstring). Unlike TIMIT, AISHELL-4
-    itself is freely downloadable with no license agreement, but this
-    project doesn't auto-fetch it (its archives are multi-gigabyte 8-channel
-    audio) -- point `root` (or the AISHELL4_ROOT env var) at wherever you've
-    already extracted it."""
 
-    root: str = ""
 
 
 @dataclass
@@ -258,7 +249,6 @@ class ExperimentConfig:
     transformation: TransformationConfig = field(default_factory=TransformationConfig)
     data: DataConfig = field(default_factory=DataConfig)
     voxceleb: VoxCelebConfig = field(default_factory=VoxCelebConfig)
-    aishell4: Aishell4Config = field(default_factory=Aishell4Config)
     tidyvoicex: TidyVoiceXConfig = field(default_factory=TidyVoiceXConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     conformer: ConformerConfig = field(default_factory=ConformerConfig)
@@ -289,7 +279,6 @@ class ExperimentConfig:
             ("transformation", TransformationConfig),
             ("data", DataConfig),
             ("voxceleb", VoxCelebConfig),
-            ("aishell4", Aishell4Config),
             ("tidyvoicex", TidyVoiceXConfig),
             ("model", ModelConfig),
             ("conformer", ConformerConfig),
