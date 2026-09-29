@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field, asdict
+from typing import Tuple
 import yaml
 
 
@@ -164,6 +165,39 @@ class OptimizerConfig:
 
 
 @dataclass
+class FBACorruptionConfig:
+    """Configuration for FBA (Frame-Based Acoustic) corruption augmentation.
+    
+    This implements Strategy 1: Make FBA unreliable during training to force
+    models to rely on SST (Supra-Segmental Temporal) features.
+    
+    When enabled, spectral corruption is applied to training samples with the
+    specified probability, degrading spectral cues while preserving temporal
+    structure (frame order, durations).
+    """
+    # Master switch: when False, no corruption is ever applied
+    enabled: bool = False
+    # Probability of applying corruption to each training sample
+    probability: float = 0.5
+    # Formant shift range in semitones (simulated on spectrogram frequency bins)
+    formant_shift_range: Tuple[float, float] = (0.0, 0.0)
+    # Additive noise standard deviation range (relative to feature magnitude)
+    noise_std_range: Tuple[float, float] = (0.0, 0.0)
+    # Probability of applying spectral inversion (reversing frequency bins)
+    spectral_invert_probability: float = 0.0
+    
+    def is_active(self) -> bool:
+        """Returns True if corruption is enabled and at least one corruption type is configured."""
+        if not self.enabled or self.probability <= 0:
+            return False
+        return (
+            self.formant_shift_range != (0, 0) or
+            self.noise_std_range != (0, 0) or
+            self.spectral_invert_probability > 0
+        )
+
+
+@dataclass
 class TrainingConfig:
     num_epochs: int = 128
     batch_size: int = 100
@@ -207,6 +241,8 @@ class TrainingConfig:
     # process). Lazily-featurized corpora (VoxCeleb) read one file per
     # training segment, so they need several to keep the GPU busy.
     num_workers: int = 0
+    # FBA corruption augmentation configuration (Strategy 1)
+    fba_corruption: FBACorruptionConfig = field(default_factory=FBACorruptionConfig)
 
 
 @dataclass
@@ -290,7 +326,12 @@ class ExperimentConfig:
             ("evaluation", EvaluationConfig),
             ("wandb", WandbConfig),
         ):
-            kwargs[section_name] = section_cls(**raw.get(section_name, {}))
+            section_raw = raw.get(section_name, {})
+            # Special handling for TrainingConfig to convert fba_corruption dict to dataclass
+            if section_name == "training" and "fba_corruption" in section_raw:
+                fba_raw = section_raw["fba_corruption"]
+                section_raw = {**section_raw, "fba_corruption": FBACorruptionConfig(**fba_raw)}
+            kwargs[section_name] = section_cls(**section_raw)
         kwargs["device"] = raw.get("device", "auto")
         kwargs["num_runs"] = raw.get("num_runs", 5)
         return cls(**kwargs)

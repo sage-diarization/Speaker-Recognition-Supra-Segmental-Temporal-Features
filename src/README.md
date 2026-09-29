@@ -286,3 +286,85 @@ bottleneck are the same 512-d tensor, see `src/models/resnet.py`). Set
 `model.type` in the config to the new registry key, and
 add a `<name>: ExperimentConfig` section if the model needs its own
 hyperparameters (see `ConformerConfig` in `src/config.py`).
+
+
+## FBA Corruption Augmentation (Strategy 1)
+
+To test whether DNNs can be forced to rely on supra-segmental temporal (SST)
+features, this implementation adds **FBA (Frame-Based Acoustic) corruption
+augmentation** that degrades spectral cues during training while preserving
+temporal structure. This implements Strategy 1 from the research recommendations:
+"Make FBA unreliable during training (remove the shortcut)".
+
+### Configuration
+
+Add the `fba_corruption` section under `training` in your YAML config:
+
+```yaml
+training:
+  fba_corruption:
+    enabled: true              # Master switch (default: false)
+    probability: 0.5           # Probability per training sample (default: 0.5)
+    formant_shift_range: [-2.0, 2.0]  # Formant shift in semitones (default: [0, 0])
+    noise_std_range: [0.05, 0.15]    # Additive noise std deviation (default: [0, 0])
+    spectral_invert_probability: 0.0  # Probability of spectral inversion (default: 0)
+```
+
+See `configs/fba_corruption_example.yaml` for a complete example with recommended
+settings for different experimental conditions.
+
+### Corruption Types
+
+All corruption types preserve temporal structure (frame order, durations) while
+degrading spectral content:
+
+- **Formant shifting**: Approximates formant manipulation by shifting spectrogram
+  frequency bins, altering the spectral envelope while keeping temporal patterns.
+- **Additive noise**: Adds Gaussian noise to spectrogram frames to obscure fine
+  spectral details.
+- **Spectral inversion**: Reverses the frequency axis of the spectrogram, disrupting
+  spectral patterns while preserving temporal dynamics.
+
+### Key Design Features
+
+- **Training-only**: Corruption is only applied during training, never during
+  validation or testing. This ensures clean evaluation sets for measuring SST reliance.
+- **Configurable**: All parameters can be set via YAML configuration files for easy
+  experimentation and reproducibility.
+- **Backward compatible**: Disabled by default; existing configs work unchanged.
+- **Spectral-level**: Operates on spectrogram features (not raw waveforms) for
+  efficiency and consistency with the existing pipeline.
+
+### Usage Example
+
+```bash
+# Run with FBA corruption enabled
+python -m src.experiment --config configs/fba_corruption_example.yaml
+
+# Or add to any existing config
+python -m src.experiment --config configs/cnn-timit.yaml  # No corruption (default)
+```
+
+### Evaluating SST Reliance
+
+After training with FBA corruption, evaluate using the OS/SS/SU protocol:
+
+| Train\Test | Expected EER | Interpretation |
+|------------|--------------|----------------|
+| OS/OS | Low | Model works on original speech |
+| OS/SS | **High** (if SST relied upon) | Model fails when SST is destroyed |
+| SS/SS | Low (if SST relied upon) | Model adapts to shuffled input |
+
+**Success criterion**: A large gap (order-of-magnitude) between OS/OS and OS/SS EER
+indicates the model has learned to exploit SST features.
+
+### Testing
+
+Run the test suite to verify the implementation:
+
+```bash
+python -m pytest tests/test_fba_corruption.py -v
+```
+
+All tests verify configuration parsing, corruption operations, dataset integration,
+and backward compatibility.

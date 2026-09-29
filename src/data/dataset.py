@@ -1,10 +1,12 @@
 import numpy as np
 import torch
+from typing import Optional
 from torch.utils.data import Dataset
 
 from .features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
 from .lazy_features import resolve_features, utterance_length
 from .segments import DRAW_STRATEGIES
+from .augment import FBACorruptor
 
 
 def featurize_waveform(waveform, transformation_config):
@@ -34,15 +36,38 @@ class SegmentDataset(Dataset):
     Each utterance entry is either a plain ndarray (already featurized) or a
     LazyFeatures instance (featurized on first access -- see
     src/data/lazy_features.py), transparently via resolve_features/
-    utterance_length."""
+    utterance_length.
+    
+    FBA corruption augmentation (Strategy 1) can be optionally applied during
+    training to degrade spectral cues and force models to rely on SST features.
+    """
 
-    def __init__(self, utterances, segment_length, draw_strategy, seed=None):
+    def __init__(self, utterances, segment_length, draw_strategy, seed=None, 
+                 fba_corruption_config: Optional[FBACorruptionConfig] = None,
+                 is_training: bool = True):
+        """
+        Args:
+            utterances: List of (features, label) pairs
+            segment_length: Number of frames in each segment
+            draw_strategy: One of "OS", "SS", "SU"
+            seed: Random seed for segment drawing
+            fba_corruption_config: Optional FBACorruptionConfig for spectral augmentation.
+                                  Only applied when is_training=True.
+            is_training: Whether this dataset is used for training (vs validation/test)
+        """
         self.segment_length = segment_length
         self.draw_fn = DRAW_STRATEGIES[draw_strategy]
         self.rng = np.random.default_rng(seed)
         self.utterances = [(f, label) for f, label in utterances if utterance_length(f) > segment_length]
         if not self.utterances:
             raise ValueError("no utterance is longer than segment_length")
+        
+        # Setup FBA corruption if configured and in training mode
+        self._corruptor = None
+        if (fba_corruption_config is not None and 
+            fba_corruption_config.is_active() and 
+            is_training):
+            self._corruptor = FBACorruptor(fba_corruption_config)
 
     def __len__(self):
         return len(self.utterances)
@@ -56,5 +81,13 @@ class SegmentDataset(Dataset):
         else:
             features = resolve_features(features_or_loader)
         segment = self.draw_fn(features, self.segment_length, self.rng)
+        
+        # Convert to tensor
         tensor = torch.from_numpy(segment).float().unsqueeze(0)
+        
+        # Apply FBA corruption if configured
+        if self._corruptor is not None:
+            # Squeeze the channel dimension, corrupt, then unsqueeze back
+            tensor = self._corruptor(tensor.squeeze(0)).unsqueeze(0)
+        
         return tensor, label
