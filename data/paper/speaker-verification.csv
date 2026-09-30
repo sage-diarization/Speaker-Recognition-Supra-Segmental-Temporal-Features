@@ -29,3 +29,9 @@ paper,RNN-voxceleb-OS/final,voxceleb,RNN,OS,SU,26.2,0.18
 paper,RNN-voxceleb-SS/final,voxceleb,RNN,SS,OS,32.19,0.54
 paper,RNN-voxceleb-SS/final,voxceleb,RNN,SS,SS,26.58,0.84
 paper,RNN-voxceleb-SS/final,voxceleb,RNN,SS,SU,23.57,0.09
+paper,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,OS,12.49,0.15
+paper,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,SS,32.19,0.39
+paper,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,SU,34.11,0.54
+paper,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,OS,20.74,0.46
+paper,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SS,20.36,0.23
+paper,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SU,21.02,0.34
