@@ -1,0 +1,18 @@
+# See docs at: https://mystmd.org/guide/frontmatter
+version: 1
+project:
+  id: fe793991-08d2-4fe5-801b-22413a4642a2
+  # title:
+  # description:
+  # keywords: []
+  # authors: []
+  github: https://github.com/sage-diarization/Speaker-Recognition-Supra-Segmental-Temporal-Features
+  # To autogenerate a Table of Contents, run "myst init --write-toc"
+  toc:
+    - file: doc/speaker-verification.ipynb
+
+site:
+  template: article-theme
+  # options:
+  #   favicon: favicon.ico
+  #   logo: site_logo.png

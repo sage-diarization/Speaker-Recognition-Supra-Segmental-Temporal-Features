@@ -140,3 +140,6 @@ logs/
 
 # training checkpoints + resume manifests (src/training/trainer.py, src/experiment.py)
 checkpoints/
+
+# MyST build outputs
+_build
