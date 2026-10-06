@@ -41,9 +41,9 @@ xxdqjv17,Conformer-voxceleb-OS/final,voxceleb,Conformer,OS,SU,38.4464398198033,0
 to8oq8ng,Conformer-voxceleb-SS/final,voxceleb,Conformer,SS,OS,20.2148810525674,0.421961798872253
 to8oq8ng,Conformer-voxceleb-SS/final,voxceleb,Conformer,SS,SS,18.2857355815233,0.432830453468088
 to8oq8ng,Conformer-voxceleb-SS/final,voxceleb,Conformer,SS,SU,18.1025206310923,0.434956072156919
-cfwq4quw,ResNet-voxceleb-OS/intermediate,voxceleb,ResNet,OS,OS,12.5151,0.3759
-cfwq4quw,ResNet-voxceleb-OS/intermediate,voxceleb,ResNet,OS,SS,33.7398,0.4142
-cfwq4quw,ResNet-voxceleb-OS/intermediate,voxceleb,ResNet,OS,SU,35.5196,0.541
-zctctcwk,ResNet-voxceleb-SS/intermediate,voxceleb,ResNet,SS,OS,20.2944,0.3174
-zctctcwk,ResNet-voxceleb-SS/intermediate,voxceleb,ResNet,SS,SS,20.0423,0.2209
-zctctcwk,ResNet-voxceleb-SS/intermediate,voxceleb,ResNet,SS,SU,20.4707,0.271
+cfwq4quw,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,OS,12.51570718092075,0.3749044786918025
+cfwq4quw,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,SS,32.95539117721247,1.0421220055784135
+cfwq4quw,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,SU,34.6578738809977,1.165607367149145
+zctctcwk,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,OS,20.690338599131582,0.5963505270855426
+zctctcwk,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SS,20.14501861658712,0.28971010085826243
+zctctcwk,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SU,20.615763979819732,0.3788418792331442
