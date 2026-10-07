@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=2880           # 48 hours (500 epochs may need more time)
+#SBATCH --time=1440
 #SBATCH --job-name=sst/fresnet-voxceleb-ss
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
