@@ -13,9 +13,8 @@ num_runs: 5                # independent train/test runs per strategy to average
 
 # TIMIT dataset configuration
 data:
-  dataset: "TIMIT"
+  timit_root: "~/.cache/datasets/timit"          # path to an already-extracted TIMIT TRAIN/TEST tree
   segment_duration: 1.0    # Use 1s segments for TIMIT (shorter than VoxCeleb's 2s)
-  timit_root: ""         # Override with TIMIT_ROOT env var or path to your TIMIT directory
 
 model:
   type: "FResNet"
