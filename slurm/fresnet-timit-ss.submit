@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --time=1440
+#SBATCH --job-name=sst/fresnet-timit-ss
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --array=0-4%1
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+source slurm/install.submit
+source slurm/secrets.submit
+
+echo "Start F-ResNet TIMIT SS experiment..."
+python3 -u -m src.experiment \
+  --config configs/fresnet-timit.yaml \
+  --strategy SS
+
+echo "Done."

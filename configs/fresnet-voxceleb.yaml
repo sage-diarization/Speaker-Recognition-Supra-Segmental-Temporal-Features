@@ -1,0 +1,89 @@
+# F-ResNet (Fast ResNet-34) configuration for VoxCeleb
+#
+# This implements the F-ResNet model from Chung et al. 2020 (Interspeech),
+# "In defence of metric learning for speaker recognition", referenced as
+# [29] in Neururer et al. 2024's Table 3.
+#
+# Sourced from github.com/clovaai/voxceleb_trainer's ResNetSE34L model.
+#
+# Protocol from clovaai/voxceleb_trainer README:
+# - Training segments: 200 frames (2 seconds at 10ms frame step)
+# - Evaluation segments: 400 frames (4 seconds)
+# - Batch size: 800 (achieved via nPerSpeaker=2, batch_size=400)
+# - Epochs: 500
+# - Loss: Angular Prototypical (angleproto) or AM-Softmax
+#
+# Note: The evaluation segment duration (4s) is handled by the evaluation
+# pipeline's max_frames parameter in the original clovaai code. In this
+# implementation, we use segment_duration for training, and the evaluation
+# will use the same duration unless otherwise configured.
+
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over
+
+# VoxCeleb dataset configuration
+data:
+  dataset: "VoxCeleb"
+  segment_duration: 2.0    # F-ResNet uses t=2s for training (paper: "t = 2 s")
+
+# Neururer et al. 2024's protocol (Section 3.2, context/src's
+# 04_evaluation/VOX-00_ORIGINAL.json): train on VoxCeleb2 dev, select
+# checkpoints on VoxCeleb1-O (cleaned), report SV on VoxCeleb1-H (cleaned).
+voxceleb:
+  root: "~/.cache/datasets/voxceleb1"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  vox2_root: "~/.cache/datasets/voxceleb2"   # VoxCeleb2 dev as 16 kHz WAV, downloaded + converted manually
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"          # checkpoint selection
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
+
+model:
+  type: "FResNet"
+
+# F-ResNet's original front-end from clovaai/voxceleb_trainer:
+# Mel spectrogram with 40 mel bins, Hamming window, 512-point FFT
+# (configs/ResNetSE34L_AM.yaml and ResNetSE34L_AP.yaml use n_mels=40)
+transformation:
+  type: "mel"
+  window: "hamming"
+  nfft: 512
+  frame_length_s: 0.025
+  frame_step_s: 0.01
+  n_mels: 40
+
+# F-ResNet hyperparameters
+fresnet:
+  bottleneck: 512
+  encoder_type: "SAP"  # Self-Attentive Pooling (or "ASP" for Attentive Statistics Pooling)
+  n_mels: 40
+
+# Loss function: Angular Prototypical (angleproto) from clovaai configs
+# Note: The paper uses "angleproto" (ResNetSE34L_AP.yaml) or "amsoftmax" (ResNetSE34L_AM.yaml)
+loss:
+  type: "ANGULAR_MARGIN"
+  margin_cosface: 0.3
+  margin_arcface: 0.0
+  margin_sphereface: 1.0
+  scale: 40.0
+
+optimizer:
+  learning_rate: 0.0001
+  weight_decay: 0.0002
+
+# Training protocol from clovaai/voxceleb_trainer:
+# - 500 epochs (paper: "500 epochs")
+# - Effective batch size 800 (nPerSpeaker=2, batch_size=400)
+# Note: The original clovaai code uses batch_size=200 with nPerSpeaker=2 for
+# effective batch size of 400, and batch_size=400 with nPerSpeaker=2 for 800.
+# Here we set batch_size=800 directly.
+training:
+  num_epochs: 500
+  batch_size: 800
+  checkpoint_every_epochs: 1  # VoxCeleb's expensive epochs: checkpoint every epoch
+  paper_checkpoint_epochs: false  # Use all epochs, not just the 11 from the paper
+  num_workers: 8
+
+wandb:
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

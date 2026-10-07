@@ -1,0 +1,71 @@
+# F-ResNet (Fast ResNet-34) configuration for TIMIT
+#
+# This implements the F-ResNet model from Chung et al. 2020 (Interspeech),
+# "In defence of metric learning for speaker recognition", referenced as
+# [29] in Neururer et al. 2024's Table 3.
+#
+# Note: The paper calls F-ResNet "out of competition" on TIMIT due to its
+# VoxCeleb-tuned front-end. However, we include this config for completeness
+# and for running the same OS/SS/SU evaluation protocol.
+
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER/MR mean+SD over
+
+# TIMIT dataset configuration
+data:
+  dataset: "TIMIT"
+  segment_duration: 1.0    # Use 1s segments for TIMIT (shorter than VoxCeleb's 2s)
+  timit_root: ""         # Override with TIMIT_ROOT env var or path to your TIMIT directory
+
+model:
+  type: "FResNet"
+
+# F-ResNet's original front-end from clovaai/voxceleb_trainer:
+# Mel spectrogram with 40 mel bins, Hamming window, 512-point FFT
+transformation:
+  type: "mel"
+  window: "hamming"
+  nfft: 512
+  frame_length_s: 0.025
+  frame_step_s: 0.01
+  n_mels: 40
+
+# F-ResNet hyperparameters
+fresnet:
+  bottleneck: 512
+  encoder_type: "SAP"  # Self-Attentive Pooling (or "ASP")
+  n_mels: 40
+
+# Loss function
+loss:
+  type: "ANGULAR_MARGIN"
+  margin_cosface: 0.3
+  margin_arcface: 0.0
+  margin_sphereface: 1.0
+  scale: 40.0
+
+optimizer:
+  learning_rate: 0.0001
+  weight_decay: 0.0002
+
+# Training configuration for TIMIT
+training:
+  num_epochs: 128  # Reduced from 500 for TIMIT (smaller dataset)
+  batch_size: 100
+  early_stopping_patience: 15  # Stop if no improvement for 15 epochs
+  num_workers: 0
+  # Evaluate at the same 11 epochs as the paper (np.linspace(0, 127, 11))
+  paper_checkpoint_epochs: true
+
+# TIMIT evaluation configuration
+evaluation:
+  dev_speakers: []  # Use standard 50-speaker TIMIT development set
+  sc_speakers: []   # Use paper's SC speaker list (40 female speakers)
+  dev_holdout_per_speaker: 2
+
+wandb:
+  enabled: false         # Disable wandb for local runs by default
+  project: "speaker-verification"
+  entity: ""
+  mode: "online"
+  tags: []

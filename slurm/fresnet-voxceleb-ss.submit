@@ -1,0 +1,24 @@
+#!/bin/bash
+#SBATCH --time=2880           # 48 hours (500 epochs may need more time)
+#SBATCH --job-name=sst/fresnet-voxceleb-ss
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --array=0-4%1         # 5 runs (0-4)
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+source slurm/install.submit
+source slurm/secrets.submit
+
+echo "Start F-ResNet SS experiment..."
+wandb login $WANDB_API_KEY
+python3 -u -m src.experiment \
+  --config configs/fresnet-voxceleb.yaml \
+  --strategy SS
+
+echo "Done."

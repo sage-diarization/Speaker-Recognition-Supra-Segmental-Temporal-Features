@@ -145,6 +145,24 @@ class ResNetConfig:
 
 
 @dataclass
+class FResNetConfig:
+    """Fast ResNet-34 (F-ResNet / ResNetSE34L) from github.com/clovaai/voxceleb_trainer
+    (Chung et al., "In defence of metric learning for speaker recognition", Interspeech 2020).
+    Corresponds to reference [29] in Neururer et al. 2024, Table 3.
+    
+    Hyperparameters:
+    - bottleneck: Output embedding dimension (default: 512)
+    - encoder_type: Pooling type - "SAP" (Self-Attentive Pooling) or "ASP" 
+      (Attentive Statistics Pooling). Default: "SAP".
+    - n_mels: Number of mel filterbanks (default: 40, matching clovaai's config).
+    """
+
+    bottleneck: int = 512
+    encoder_type: str = "SAP"
+    n_mels: int = 40
+
+
+@dataclass
 class LossConfig:
     type: str = "ANGULAR_MARGIN"
     margin_cosface: float = 0.3
@@ -291,6 +309,7 @@ class ExperimentConfig:
     conformer: ConformerConfig = field(default_factory=ConformerConfig)
     rnn: RNNConfig = field(default_factory=RNNConfig)
     resnet: ResNetConfig = field(default_factory=ResNetConfig)
+    fresnet: FResNetConfig = field(default_factory=FResNetConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -321,6 +340,7 @@ class ExperimentConfig:
             ("conformer", ConformerConfig),
             ("rnn", RNNConfig),
             ("resnet", ResNetConfig),
+            ("fresnet", FResNetConfig),
             ("loss", LossConfig),
             ("optimizer", OptimizerConfig),
             ("training", TrainingConfig),
