@@ -89,7 +89,8 @@ class FResNetBackend(nn.Module):
     """F-ResNet (Fast ResNet-34 / ResNetSE34L) backend.
     
     Ported from github.com/clovaai/voxceleb_trainer's ResNetSE34L model.
-    Operates on (batch, 1, time, freq) tensors after front-end transformation.
+    Takes (batch, 1, time, freq) tensors after front-end transformation, like
+    the other backends, and transposes them to the original's (freq, time).
     
     Args:
         num_freqs: Number of frequency bins from the front-end.
@@ -114,6 +115,7 @@ class FResNetBackend(nn.Module):
         
         # Stem: 7x7 conv with stride (2,1) as in clovaai's ResNetSE34L
         # Note: The original uses stride=(2,1) which downsample in freq but not time
+        # (forward() transposes its (time, freq) input to match)
         self.conv1 = nn.Conv2d(1, num_filters[0], kernel_size=7, 
                                stride=(2, 1), padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(num_filters[0])
@@ -225,8 +227,11 @@ class FResNetBackend(nn.Module):
             BackendOutput(backend, bottleneck) where both are the speaker embedding
             (F-ResNet uses CUT=AGGREGATION, so backend == bottleneck)
         """
-        # x shape: (batch, 1, time, freq)
-        
+        # clovaai's ResNetSE34L runs on (batch, 1, n_mels, time): swap so the
+        # strides below downsample freq/time as in the original, the mean
+        # below pools over frequency and SAP/ASP attend over time frames.
+        x = x.transpose(2, 3)  # (batch, 1, freq, time)
+
         # Stem
         x = self.conv1(x)
         x = self.bn1(x)

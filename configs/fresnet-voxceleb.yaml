@@ -75,10 +75,12 @@ optimizer:
 # effective batch size of 400, and batch_size=400 with nPerSpeaker=2 for 800.
 # Here we set batch_size=800 directly.
 training:
-  num_epochs: 500
-  batch_size: 800
+  # num_epochs: 500
+  # batch_size: 800
+  num_epochs: 128
+  batch_size: 100
   checkpoint_every_epochs: 1  # VoxCeleb's expensive epochs: checkpoint every epoch
-  paper_checkpoint_epochs: false  # Use all epochs, not just the 11 from the paper
+  paper_checkpoint_epochs: true  # Use all epochs, not just the 11 from the paper
   num_workers: 8
 
 wandb:
