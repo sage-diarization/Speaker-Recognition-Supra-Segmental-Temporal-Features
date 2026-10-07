@@ -1,5 +1,4 @@
-from typing import List, Optional
-
+from typing import List, Optional, Dict, Any, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -20,38 +19,172 @@ plt.rcParams['grid.alpha'] = 0.3
 plt.rcParams['legend.facecolor'] = 'white'
 plt.rcParams['legend.edgecolor'] = 'black'
 
+# Load data once at module level
 df_repro = pd.read_csv('reproduction/speaker-verification.csv')
 df_paper = pd.read_csv('paper/speaker-verification.csv')
 
-def paper_vs_repro(archs: Optional[List[str]] = None):
+# Default configurations
+DEFAULT_ARCHS = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+DEFAULT_COLORMAP = {'OS': '#1f77b4', 'SS': '#ff7f0e', 'SU': '#2ca02c'}
+DEFAULT_GREEN = '#2ca02c'
+
+# Style configurations
+BAR_STYLE_SOLID = {'alpha': 1.0, 'edgecolor': 'black'}
+BAR_STYLE_SHADOW = {'alpha': 0.4, 'edgecolor': 'none'}
+GRID_STYLE = {'axis': 'y', 'alpha': 0.3, 'linestyle': '--'}
+LEGEND_STYLE = {'loc': 'upper center', 'fontsize': 8}
+TITLE_STYLE = {'fontsize': 12, 'pad': 10}
+LABEL_STYLE = {'fontsize': 10}
+TICK_STYLE = {'rotation': 45, 'ha': 'right', 'fontsize': 9}
+
+
+def _filter_dataframe(df: pd.DataFrame, 
+                      datasets: Optional[List[str]] = None,
+                      train_strategies: Optional[List[str]] = None,
+                      test_strategies: Optional[List[str]] = None,
+                      architectures: Optional[List[str]] = None) -> pd.DataFrame:
+    """Filter dataframe by multiple criteria."""
+    filtered = df.copy()
+    if datasets:
+        filtered = filtered[filtered['dataset'].isin(datasets)]
+    if train_strategies:
+        filtered = filtered[filtered['train_strategy'].isin(train_strategies)]
+    if test_strategies:
+        filtered = filtered[filtered['test_strategy'].isin(test_strategies)]
+    if architectures:
+        filtered = filtered[filtered['architecture'].isin(architectures)]
+    return filtered
+
+
+def _get_filtered_architecture_data(subset: pd.DataFrame, 
+                                   architectures: List[str],
+                                   test_strategy: str) -> Tuple[List[float], List[float], List[float]]:
+    """Extract filtered EER means, stds, and x positions (excluding None values)."""
+    arch_to_eer = {}
+    arch_to_std = {}
+    
+    for _, row in subset[subset['test_strategy'] == test_strategy].iterrows():
+        arch_to_eer[row['architecture']] = row['eer_mean']
+        arch_to_std[row['architecture']] = row['eer_std']
+    
+    x_positions = []
+    means_filt = []
+    stds_filt = []
+    
+    for idx, arch in enumerate(architectures):
+        mean = arch_to_eer.get(arch, None)
+        std = arch_to_std.get(arch, None)
+        if mean is not None:
+            x_positions.append(idx)
+            means_filt.append(mean)
+            stds_filt.append(std)
+    
+    return x_positions, means_filt, stds_filt
+
+
+def _setup_subplots(n_rows: int, n_cols: int, figsize: Tuple[int, int], sharey: str = None) -> Tuple[plt.Figure, np.ndarray]:
+    """Create subplot grid with proper reshaping for single row/column cases."""
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharey=sharey)
+    
+    # Handle single row or column cases
+    if n_rows == 1 and n_cols > 1:
+        axes = axes.reshape(1, -1)
+    elif n_cols == 1 and n_rows > 1:
+        axes = axes.reshape(-1, 1)
+    elif n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    
+    return fig, axes
+
+
+def _get_axis(axes, i: int, j: int, n_rows: int, n_cols: int):
+    """Get the appropriate axis from a potentially nested axes array."""
+    if n_rows == 1 and n_cols == 1:
+        return axes[0, 0]
+    elif n_rows == 1:
+        return axes[0, j]
+    elif n_cols == 1:
+        return axes[i, 0]
+    else:
+        return axes[i, j]
+
+
+def _style_axis(ax, title: str = None, ylabel: str = None, 
+                ylim: Tuple[float, float] = None, xticks: np.ndarray = None,
+                xticklabels: List[str] = None, show_grid: bool = True,
+                legend_ncol: int = 1):
+    """Apply consistent styling to a plot axis."""
+    if title:
+        ax.set_title(title, **TITLE_STYLE)
+    if ylabel:
+        ax.set_ylabel(ylabel, **LABEL_STYLE)
+    if ylim:
+        ax.set_ylim(ylim)
+    if xticks is not None:
+        ax.set_xticks(xticks)
+    if xticklabels:
+        ax.set_xticklabels(xticklabels, **TICK_STYLE)
+    if show_grid:
+        ax.grid(**GRID_STYLE)
+    
+    # Add legend if there are labeled artists
+    if len(ax.get_legend_handles_labels()[0]) > 0:
+        legend_style = LEGEND_STYLE.copy()
+        if legend_ncol > 1:
+            legend_style['ncol'] = legend_ncol
+        ax.legend(**legend_style)
+
+
+def paper_vs_repro(archs: Optional[List[str]] = None,
+                   datasets: Optional[List[str]] = None,
+                   train_strategies: Optional[List[str]] = None,
+                   test_strategies: Optional[List[str]] = None,
+                   figsize: Tuple[int, int] = (16, 8),
+                   show_paper: bool = True,
+                   show_repro: bool = True):
+    """
+    Compare paper vs reproduction results.
+    
+    Parameters:
+    -----------
+    archs : List[str]
+        Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet']
+    datasets : List[str]
+        Datasets to include. Default: all datasets in filtered data
+    train_strategies : List[str]
+        Training strategies to include. Default: ['OS', 'SS']
+    test_strategies : List[str]
+        Test strategies to include. Default: all test strategies in filtered data
+    figsize : Tuple[int, int]
+        Figure size. Default: (16, 8)
+    show_paper : bool
+        Whether to show paper results. Default: True
+    show_repro : bool
+        Whether to show reproduction results. Default: True
+    """
     if archs is None:
         archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet']
-
-    # Filter for OS and SS training strategies only
-    df_filtered_repro = df_repro[df_repro['train_strategy'].isin(['OS', 'SS'])].copy()
-    df_filtered_paper = df_paper[df_paper['train_strategy'].isin(['OS', 'SS'])].copy()
-
-    # Get unique datasets and training strategies
-    datasets = sorted(df_filtered_repro['dataset'].unique())
-    train_strategies = sorted(df_filtered_repro['train_strategy'].unique())
-    test_strategies = sorted(df_filtered_repro['test_strategy'].unique())
-
-    # Set up the 2x2 grid: rows=datasets, cols=training_strategies
-    fig, axes = plt.subplots(len(datasets), len(train_strategies),
-                             figsize=(16, 8), sharey='row')
-
-    # If only one row or column, axes will be 1D, so we need to handle that
-    if len(datasets) == 1:
-        axes = axes.reshape(1, -1)
-    if len(train_strategies) == 1:
-        axes = axes.reshape(-1, 1)
-
-    # Define colors for test strategies
-    colors = {'OS': '#1f77b4', 'SS': '#ff7f0e', 'SU': '#2ca02c'}
+    if train_strategies is None:
+        train_strategies = ['OS', 'SS']
+    
+    # Filter dataframes
+    df_filtered_repro = _filter_dataframe(df_repro, train_strategies=train_strategies)
+    df_filtered_paper = _filter_dataframe(df_paper, train_strategies=train_strategies)
+    
+    # Get unique values if not provided
+    if datasets is None:
+        datasets = sorted(df_filtered_repro['dataset'].unique())
+    if test_strategies is None:
+        test_strategies = sorted(df_filtered_repro['test_strategy'].unique())
+    
+    # Set up subplots
+    fig, axes = _setup_subplots(len(datasets), len(train_strategies), figsize, sharey='row')
+    
+    # Color schemes
+    colors = DEFAULT_COLORMAP.copy()
     labels = {'OS': 'OS (repro)', 'SS': 'SS (repro)', 'SU': 'SU (repro)'}
-
-    # Find global max for y-axis alignment (from both repro and paper)
-    # Calculate max per dataset for y-axis alignment
+    
+    # Calculate y-axis max per dataset
     dataset_max = {}
     for dataset in datasets:
         dataset_data_repro = df_filtered_repro[df_filtered_repro['dataset'] == dataset]
@@ -60,467 +193,493 @@ def paper_vs_repro(archs: Optional[List[str]] = None):
         eer_max_paper = dataset_data_paper['eer_mean'] + dataset_data_paper['eer_std']
         all_eer_max = pd.concat([eer_max_repro, eer_max_paper])
         dataset_max[dataset] = max(all_eer_max) * 1.15
-
+    
     # Determine bar width based on number of test strategies
     n_test = len(test_strategies)
     bar_width = 0.8 / (n_test * 2)
-
+    
     # Plot for each dataset and training strategy
     for i, dataset in enumerate(datasets):
         for j, train_strategy in enumerate(train_strategies):
-            ax = axes[i, j]
-
-            # Get data (repro)
+            ax = _get_axis(axes, i, j, len(datasets), len(train_strategies))
+            
+            # Get data subsets
             subset_repro = df_filtered_repro[(df_filtered_repro['dataset'] == dataset) &
-                                             (df_filtered_repro['train_strategy'] == train_strategy)]
-
-            # Get data (paper)
+                                           (df_filtered_repro['train_strategy'] == train_strategy)]
             subset_paper = df_filtered_paper[(df_filtered_paper['dataset'] == dataset) &
-                                             (df_filtered_paper['train_strategy'] == train_strategy)]
-
+                                           (df_filtered_paper['train_strategy'] == train_strategy)]
+            
             # Get architectures (preserving order)
             subset_architectures = [arch for arch in archs if arch in subset_repro['architecture'].unique()]
-
+            
             if not subset_architectures:
-                ax.set_title(f'{dataset}, Train: {train_strategy}', fontsize=12, pad=10)
+                ax.set_title(f'dataset = {dataset}, train = {train_strategy}', **TITLE_STYLE)
                 continue
-
+            
             n_arch = len(subset_architectures)
             x = np.arange(n_arch)
-
+            
             # Plot each test strategy
             for k, test_strategy in enumerate(test_strategies):
                 paper_offset = (k * 2 - (n_test * 2 - 1) / 2) * bar_width
                 repro_offset = (k * 2 + 1 - (n_test * 2 - 1) / 2) * bar_width
-
+                
                 # Paper shadow bars
-                paper_arch_to_eer = {}
-                paper_arch_to_std = {}
-                if len(subset_paper) > 0:
-                    test_data_paper = subset_paper[subset_paper['test_strategy'] == test_strategy]
-                    for _, row in test_data_paper.iterrows():
-                        paper_arch_to_eer[row['architecture']] = row['eer_mean']
-                        paper_arch_to_std[row['architecture']] = row['eer_std']
-
-                paper_means = [paper_arch_to_eer.get(arch, None) for arch in subset_architectures]
-                paper_stds = [paper_arch_to_std.get(arch, None) for arch in subset_architectures]
-
-                paper_x, paper_means_filt, paper_stds_filt = [], [], []
-                for idx, (mean, std) in enumerate(zip(paper_means, paper_stds)):
-                    if mean is not None:
-                        paper_x.append(x[idx] + paper_offset)
-                        paper_means_filt.append(mean)
-                        paper_stds_filt.append(std)
-
-                if len(paper_x) > 0:
-                    ax.bar(paper_x, paper_means_filt, bar_width,
-                           yerr=paper_stds_filt, capsize=5,
+                if show_paper and len(subset_paper) > 0:
+                    paper_x, paper_means_filt, paper_stds_filt = _get_filtered_architecture_data(
+                        subset_paper, subset_architectures, test_strategy)
+                    
+                    if len(paper_x) > 0:
+                        ax.bar(np.array(paper_x) + paper_offset, paper_means_filt, bar_width,
+                               yerr=paper_stds_filt, capsize=5,
+                               color=colors[test_strategy],
+                               label=f'{test_strategy} (paper)',
+                               **BAR_STYLE_SHADOW)
+                
+                # Repro solid bars
+                if show_repro:
+                    test_data_repro = subset_repro[subset_repro['test_strategy'] == test_strategy]
+                    arch_to_eer = {}
+                    arch_to_std = {}
+                    for _, row in test_data_repro.iterrows():
+                        arch_to_eer[row['architecture']] = row['eer_mean']
+                        arch_to_std[row['architecture']] = row['eer_std']
+                    
+                    eer_means = [arch_to_eer.get(arch, 0) for arch in subset_architectures]
+                    eer_stds = [arch_to_std.get(arch, 0) for arch in subset_architectures]
+                    
+                    ax.bar(x + repro_offset, eer_means, bar_width,
+                           yerr=eer_stds, capsize=5,
                            color=colors[test_strategy],
-                           alpha=0.4, edgecolor='none',
-                           label=f'{test_strategy} (paper)')
-
-                # Repro solid bars
-                test_data_repro = subset_repro[subset_repro['test_strategy'] == test_strategy]
-                arch_to_eer = {}
-                arch_to_std = {}
-                for _, row in test_data_repro.iterrows():
-                    arch_to_eer[row['architecture']] = row['eer_mean']
-                    arch_to_std[row['architecture']] = row['eer_std']
-
-                eer_means = [arch_to_eer.get(arch, 0) for arch in subset_architectures]
-                eer_stds = [arch_to_std.get(arch, 0) for arch in subset_architectures]
-
-                ax.bar(x + repro_offset, eer_means, bar_width,
-                       yerr=eer_stds, capsize=5,
-                       color=colors[test_strategy],
-                       alpha=1.0, edgecolor='black',
-                       label=labels[test_strategy])
-
-            # Customize plot
-            ax.set_title(f'dataset = {dataset}, train = {train_strategy}', fontsize=12, pad=10)
-            ax.set_ylabel('EER', fontsize=10)
-            ax.set_ylim(0, dataset_max[dataset])
-            ax.set_xticks(x)
-            ax.set_xticklabels(subset_architectures, rotation=45, ha='right', fontsize=9)
-            ax.grid(axis='y', alpha=0.6, linestyle='--')
-            ax.legend(loc='upper center', fontsize=8, ncol=len(test_strategies))
-
+                           label=labels[test_strategy],
+                           **BAR_STYLE_SOLID)
+            
+            # Style the axis
+            _style_axis(ax,
+                       title=f'dataset = {dataset}, train = {train_strategy}',
+                       ylabel='EER',
+                       ylim=(0, dataset_max[dataset]),
+                       xticks=x,
+                       xticklabels=subset_architectures,
+                       legend_ncol=len(test_strategies))
+    
     plt.tight_layout()
 
-def repro_abs_eer(archs: Optional[List[str]] = None):
+
+def abs_eer(comparison_type: str = 'test_strategy',
+                  archs: Optional[List[str]] = None,
+                  datasets: Optional[List[str]] = None,
+                  train_strategies: Optional[List[str]] = None,
+                  test_strategies: Optional[List[str]] = None,
+                  figsize: Tuple[int, int] = (16, 8),
+                  ylabel: str = 'EER'):
+    """
+    Plot absolute EER comparisons.
+    
+    Parameters:
+    -----------
+    comparison_type : str
+        Type of comparison: 'test_strategy' or 'training_strategy'
+        - 'test_strategy': Compare test strategies (OS vs SS) for same training strategy
+        - 'training_strategy': Compare training strategies (OS-OS vs SS-SS)
+    archs : List[str]
+        Architectures to include. Default: Depends on comparison_type
+    datasets : List[str]
+        Datasets to include. Default: ['voxceleb']
+    train_strategies : List[str]
+        Training strategies for test_strategy comparison. Default: ['OS']
+    test_strategies : List[str]
+        Test strategies for test_strategy comparison. Default: ['OS', 'SS']
+    figsize : Tuple[int, int]
+        Figure size. Default: (16, 8) for test_strategy, (14, 6) for training_strategy
+    ylabel : str
+        Y-axis label. Default: 'EER'
+    """
     if archs is None:
         archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
-
-    # Filter for OS and SS training strategies only
-    df_filtered_repro = df_repro[df_repro['train_strategy'].isin(['OS'])].copy()
-
-    # Get unique datasets and training strategies
-    datasets = ['voxceleb']  # sorted(df_filtered_repro['dataset'].unique())
-    train_strategies = sorted(df_filtered_repro['train_strategy'].unique())
-    test_strategies = ['OS', 'SS']  # sorted(df_filtered_repro['test_strategy'].unique())
-
-    # Set up the 2x2 grid: rows=datasets, cols=training_strategies
-    fig, axes = plt.subplots(len(datasets), len(train_strategies),
-                             figsize=(16, 8), sharey='row')
-
-    # If only one row or column, axes will be 1D, so we need to handle that
-    if len(datasets) == 1:
-        None  # axes = axes.reshape(1, -1)
-    if len(train_strategies) == 1:
-        None  # axes = axes.reshape(-1, 1)
-
-    # Define colors for test strategies
-    colors = {'OS': '#1f77b4', 'SS': '#ff7f0e', 'SU': '#2ca02c'}
-    labels = {'OS': 'OS', 'SS': 'SS', 'SU': 'SU'}
-
-    # Find global max for y-axis alignment (from both repro and paper)
-    # Calculate max per dataset for y-axis alignment
-    dataset_max = {}
-    for dataset in datasets:
-        dataset_data_repro = df_filtered_repro[df_filtered_repro['dataset'] == dataset]
-        # dataset_data_paper = df_filtered_paper[df_filtered_paper['dataset'] == dataset]
-        eer_max_repro = dataset_data_repro['eer_mean'] + dataset_data_repro['eer_std']
-        # eer_max_paper = dataset_data_paper['eer_mean'] + dataset_data_paper['eer_std']
-        all_eer_max = pd.concat([eer_max_repro])  # , eer_max_paper])
-        dataset_max[dataset] = max(all_eer_max) * 1.15
-
-    # Determine bar width based on number of test strategies
-    n_test = len(test_strategies)
-    bar_width = 0.8 / n_test
-
-    # Plot for each dataset and training strategy
-    for i, dataset in enumerate(datasets):
-        for j, train_strategy in enumerate(train_strategies):
-            # ax = axes[i, j]
-            ax = axes
-
-            # Get data (repro)
-            subset_repro = df_filtered_repro[(df_filtered_repro['dataset'] == dataset) &
-                                             (df_filtered_repro['train_strategy'] == train_strategy)]
-
-            # Get architectures (preserving order)
-            subset_architectures = [arch for arch in archs if arch in subset_repro['architecture'].unique()]
-
-            if not subset_architectures:
-                ax.set_title(f'{dataset}, Train: {train_strategy}', fontsize=12, pad=10)
-                continue
-
-            n_arch = len(subset_architectures)
+    if datasets is None:
+        datasets = ['voxceleb']
+    
+    if comparison_type == 'training_strategy':
+        # Compare OS-OS vs SS-SS
+        if figsize == (16, 8):  # Use smaller default for training strategy
+            figsize = (14, 6)
+        
+        # Filter for OS and SS training strategies
+        df_filtered = df_repro[df_repro['train_strategy'].isin(['OS', 'SS'])].copy()
+        
+        # Define colors for the two strategies
+        colors = {'OS-OS': '#1f77b4', 'SS-SS': '#ff7f0e'}
+        labels = {'OS-OS': 'EER(train=OS, test=OS)', 'SS-SS': 'EER(train=SS, test=SS)'}
+        
+        # Calculate global max for y-axis alignment
+        all_eers = []
+        for dataset in datasets:
+            os_os_data = df_filtered[(df_filtered['dataset'] == dataset) &
+                                 (df_filtered['train_strategy'] == 'OS') &
+                                 (df_filtered['test_strategy'] == 'OS')]
+            ss_ss_data = df_filtered[(df_filtered['dataset'] == dataset) &
+                                 (df_filtered['train_strategy'] == 'SS') &
+                                 (df_filtered['test_strategy'] == 'SS')]
+            for arch in archs:
+                for data, key in [(os_os_data, 'OS-OS'), (ss_ss_data, 'SS-SS')]:
+                    row = data[data['architecture'] == arch]
+                    if len(row) > 0:
+                        all_eers.append(row['eer_mean'].values[0] + row['eer_std'].values[0])
+        
+        global_max = max(all_eers) * 1.15 if all_eers else 1.0
+        
+        # Set up subplots
+        fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+        
+        # Handle single dataset case
+        if len(datasets) == 1:
+            axes = [axes]
+        
+        bar_width = 0.4
+        
+        # Create bar charts for each dataset
+        for i, dataset in enumerate(datasets):
+            ax = axes[i]
+            
+            # Get data for this dataset
+            os_os_data = df_filtered[(df_filtered['dataset'] == dataset) &
+                             (df_filtered['train_strategy'] == 'OS') &
+                             (df_filtered['test_strategy'] == 'OS')]
+            ss_ss_data = df_filtered[(df_filtered['dataset'] == dataset) &
+                             (df_filtered['train_strategy'] == 'SS') &
+                             (df_filtered['test_strategy'] == 'SS')]
+            
+            # Get architectures present in this dataset
+            dataset_architectures = [arch for arch in archs if 
+                                     arch in df_filtered[df_filtered['dataset'] == dataset]['architecture'].unique()]
+            
+            n_arch = len(dataset_architectures)
             x = np.arange(n_arch)
-
-            # Plot each test strategy
-            for k, test_strategy in enumerate(test_strategies):
-                offset = (k - (n_test - 1) / 2) * bar_width
-
-                # Repro solid bars
-                test_data_repro = subset_repro[subset_repro['test_strategy'] == test_strategy]
-                arch_to_eer = {}
-                arch_to_std = {}
-                for _, row in test_data_repro.iterrows():
-                    arch_to_eer[row['architecture']] = row['eer_mean']
-                    arch_to_std[row['architecture']] = row['eer_std']
-
-                eer_means = [arch_to_eer.get(arch, 0) for arch in subset_architectures]
-                eer_stds = [arch_to_std.get(arch, 0) for arch in subset_architectures]
-
-                ax.bar(x + offset, eer_means, bar_width,
-                       yerr=eer_stds, capsize=5,
-                       color=colors[test_strategy],
-                       alpha=1.0, edgecolor='black',
-                       label=labels[test_strategy])
-
-            # Customize plot
-            ax.set_title(f'dataset = {dataset}, train = {train_strategy}', fontsize=12, pad=10)
-            ax.set_ylabel('EER', fontsize=10)
-            ax.set_ylim(0, dataset_max[dataset])
-            ax.set_xticks(x)
-            ax.set_xticklabels(subset_architectures, rotation=45, ha='right', fontsize=9)
-            ax.grid(axis='y', alpha=0.3, linestyle='--')
-            ax.legend(loc='upper center', fontsize=8, ncol=len(test_strategies))
-
-    plt.tight_layout()
-
-def repro_relative_eer(archs: Optional[List[str]] = None):
-    if archs is None:
-        archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
-
-    # Plot relative difference for voxceleb dataset: EER(test=OS) vs EER(test=SS) with train=OS
-    # Filter for voxceleb dataset, OS training strategy
-    df_voxceleb_os = df_repro[(df_repro['dataset'] == 'voxceleb') & (df_repro['train_strategy'] == 'OS')].copy()
-
-    # Get architectures present in voxceleb OS data
-    voxceleb_architectures = [arch for arch in archs if arch in df_voxceleb_os['architecture'].unique()]
-
-    # Calculate relative differences and errors
-    rel_differences = []
-    rel_errors = []
-    arch_labels = []
-
-    for arch in voxceleb_architectures:
-        # Get EER for test=OS and test=SS
-        arch_data = df_voxceleb_os[df_voxceleb_os['architecture'] == arch]
-        eer_os_row = arch_data[arch_data['test_strategy'] == 'OS']
-        eer_ss_row = arch_data[arch_data['test_strategy'] == 'SS']
-
-        if len(eer_os_row) > 0 and len(eer_ss_row) > 0:
-            eer_os = eer_os_row['eer_mean'].values[0]
-            eer_ss = eer_ss_row['eer_mean'].values[0]
-            std_os = eer_os_row['eer_std'].values[0]
-            std_ss = eer_ss_row['eer_std'].values[0]
-
-            # Relative difference: (EER_OS - EER_SS) / EER_SS * 100%
-            # This shows how much better OS testing is compared to SS testing
-            rel_diff = ((eer_os - eer_ss) / eer_ss) * 100
-
-            # Error propagation for relative difference
-            # For f = (x - y) / y where x = eer_os, y = eer_ss
-            if eer_ss != 0:
-                term1 = (std_os / eer_ss) ** 2
-                term2 = ((eer_os - eer_ss) / (eer_ss ** 2) * std_ss) ** 2
-                rel_error = (term1 + term2) ** 0.5 * 100  # Convert to percent
-            else:
-                rel_error = 0
-
-            rel_differences.append(rel_diff)
-            rel_errors.append(rel_error)
-            arch_labels.append(arch)
-        else:
-            rel_differences.append(0)
-            rel_errors.append(0)
-            arch_labels.append(arch)
-
-    # Create the plot
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-
-    # Set up x positions
-    n_arch = len(arch_labels)
-    x = np.arange(n_arch)
-
-    # Plot bars with error bars
-    ax.bar(x, rel_differences, yerr=rel_errors, capsize=5,
-           color='#2ca02c', alpha=1.0, edgecolor='black')
-
-    # Customize the plot
-    ax.set_ylabel('Relative EER improvement (%)', fontsize=10)
-    ax.set_xticks(x)
-    ax.set_xticklabels(arch_labels, rotation=45, ha='right', fontsize=9)
-    ax.grid(axis='y', alpha=0.3, linestyle='--')
-    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)  # Zero reference line
-
-    # Adjust layout
-    plt.tight_layout()
-
-def repro_abs_eer_ss(archs: Optional[List[str]] = None):
-    if archs is None:
-        archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
-
-    # Plot EER(train=OS, test=OS) vs EER(train=SS, test=SS) per Architecture
-    # Filter for OS and SS training strategies
-    df_filtered = df_repro[df_repro['train_strategy'].isin(['OS', 'SS'])].copy()
-
-    # Get unique datasets
-    datasets = ['voxceleb']  # sorted(df_filtered['dataset'].unique())
-
-    # Define colors for the two strategies
-    colors = {'OS-OS': '#1f77b4', 'SS-SS': '#ff7f0e'}
-    labels = {'OS-OS': 'EER(train=OS, test=OS)', 'SS-SS': 'EER(train=SS, test=SS)'}
-
-    # Calculate global max for y-axis alignment
-    all_eers = []
-    all_errors = []
-    for dataset in datasets:
-        os_os_data = df_filtered[(df_filtered['dataset'] == dataset) &
-                                 (df_filtered['train_strategy'] == 'OS') &
-                                 (df_filtered['test_strategy'] == 'OS')]
-        ss_ss_data = df_filtered[(df_filtered['dataset'] == dataset) &
-                                 (df_filtered['train_strategy'] == 'SS') &
-                                 (df_filtered['test_strategy'] == 'SS')]
-        for arch in archs:
-            for data, key in [(os_os_data, 'OS-OS'), (ss_ss_data, 'SS-SS')]:
-                row = data[data['architecture'] == arch]
+            
+            # Plot OS-OS bars
+            os_os_means = []
+            os_os_stds = []
+            for arch in dataset_architectures:
+                row = os_os_data[os_os_data['architecture'] == arch]
                 if len(row) > 0:
-                    all_eers.append(row['eer_mean'].values[0] + row['eer_std'].values[0])
-                    all_errors.append(row['eer_std'].values[0])
+                    os_os_means.append(row['eer_mean'].values[0])
+                    os_os_stds.append(row['eer_std'].values[0])
+                else:
+                    os_os_means.append(0)
+                    os_os_stds.append(0)
+            
+            ax.bar(x - bar_width / 2, os_os_means, bar_width,
+                   yerr=os_os_stds, capsize=5,
+                   color=colors['OS-OS'], alpha=0.8, edgecolor='black',
+                   label=labels['OS-OS'])
+            
+            # Plot SS-SS bars
+            ss_ss_means = []
+            ss_ss_stds = []
+            for arch in dataset_architectures:
+                row = ss_ss_data[ss_ss_data['architecture'] == arch]
+                if len(row) > 0:
+                    ss_ss_means.append(row['eer_mean'].values[0])
+                    ss_ss_stds.append(row['eer_std'].values[0])
+                else:
+                    ss_ss_means.append(0)
+                    ss_ss_stds.append(0)
+            
+            ax.bar(x + bar_width / 2, ss_ss_means, bar_width,
+                   yerr=ss_ss_stds, capsize=5,
+                   color=colors['SS-SS'], **BAR_STYLE_SOLID,
+                   label=labels['SS-SS'])
+            
+            # Style the axis
+            _style_axis(ax,
+                       ylabel=ylabel,
+                       ylim=(0, global_max),
+                       xticks=x,
+                       xticklabels=dataset_architectures,
+                       legend_ncol=1)
+        
+        plt.tight_layout()
+        
+    else:  # comparison_type == 'test_strategy'
+        # Compare test strategies for same training strategy
+        if train_strategies is None:
+            train_strategies = ['OS']
+        if test_strategies is None:
+            test_strategies = ['OS', 'SS']
+        
+        # Filter dataframe
+        df_filtered_repro = _filter_dataframe(df_repro, 
+                                              datasets=datasets,
+                                              train_strategies=train_strategies)
+        
+        # Set up subplots
+        fig, axes = _setup_subplots(len(datasets), len(train_strategies), figsize, sharey='row')
+        
+        # Color schemes
+        colors = DEFAULT_COLORMAP.copy()
+        labels = {'OS': 'OS', 'SS': 'SS', 'SU': 'SU'}
+        
+        # Calculate y-axis max per dataset
+        dataset_max = {}
+        for dataset in datasets:
+            dataset_data_repro = df_filtered_repro[df_filtered_repro['dataset'] == dataset]
+            eer_max_repro = dataset_data_repro['eer_mean'] + dataset_data_repro['eer_std']
+            dataset_max[dataset] = max(eer_max_repro) * 1.15
+        
+        # Determine bar width
+        n_test = len(test_strategies)
+        bar_width = 0.8 / n_test
+        
+        # Plot for each dataset and training strategy
+        for i, dataset in enumerate(datasets):
+            for j, train_strategy in enumerate(train_strategies):
+                ax = _get_axis(axes, i, j, len(datasets), len(train_strategies))
+                
+                # Get data
+                subset_repro = df_filtered_repro[(df_filtered_repro['dataset'] == dataset) &
+                                               (df_filtered_repro['train_strategy'] == train_strategy)]
+                
+                # Get architectures (preserving order)
+                subset_architectures = [arch for arch in archs if arch in subset_repro['architecture'].unique()]
+                
+                if not subset_architectures:
+                    ax.set_title(f'dataset = {dataset}, train = {train_strategy}', **TITLE_STYLE)
+                    continue
+                
+                n_arch = len(subset_architectures)
+                x = np.arange(n_arch)
+                
+                # Plot each test strategy
+                for k, test_strategy in enumerate(test_strategies):
+                    offset = (k - (n_test - 1) / 2) * bar_width
+                    
+                    # Repro solid bars
+                    test_data_repro = subset_repro[subset_repro['test_strategy'] == test_strategy]
+                    arch_to_eer = {}
+                    arch_to_std = {}
+                    for _, row in test_data_repro.iterrows():
+                        arch_to_eer[row['architecture']] = row['eer_mean']
+                        arch_to_std[row['architecture']] = row['eer_std']
+                    
+                    eer_means = [arch_to_eer.get(arch, 0) for arch in subset_architectures]
+                    eer_stds = [arch_to_std.get(arch, 0) for arch in subset_architectures]
+                    
+                    ax.bar(x + offset, eer_means, bar_width,
+                           yerr=eer_stds, capsize=5,
+                           color=colors[test_strategy],
+                           label=labels[test_strategy],
+                           **BAR_STYLE_SOLID)
+                
+                # Style the axis
+                _style_axis(ax,
+                           title=f'dataset = {dataset}, train = {train_strategy}',
+                           ylabel=ylabel,
+                           ylim=(0, dataset_max[dataset]),
+                           xticks=x,
+                           xticklabels=subset_architectures,
+                           legend_ncol=len(test_strategies))
+        
+        plt.tight_layout()
 
-    global_max = max(all_eers) * 1.15 if all_eers else 1.0
-    global_err_max = max(all_errors) * 1.15 if all_errors else 1.0
 
-    # Set up 1x2 grid for 2 datasets
-    fig, axes = plt.subplots(1, len(datasets), figsize=(14, 6), sharey=True)
-
-    # Handle single dataset case
-    if len(datasets) == 1:
-        axes = [axes]
-
-    bar_width = 0.4  # Width for each bar
-
-    # Create bar charts for each dataset
-    for i, dataset in enumerate(datasets):
-        ax = axes[i]
-
-        # Get data for this dataset
-        os_os_data = df_filtered[(df_filtered['dataset'] == dataset) &
-                                 (df_filtered['train_strategy'] == 'OS') &
-                                 (df_filtered['test_strategy'] == 'OS')]
-        ss_ss_data = df_filtered[(df_filtered['dataset'] == dataset) &
-                                 (df_filtered['train_strategy'] == 'SS') &
-                                 (df_filtered['test_strategy'] == 'SS')]
-
-        # Get architectures present in this dataset
-        dataset_architectures = [arch for arch in archs if
-                                 arch in df_filtered[df_filtered['dataset'] == dataset]['architecture'].unique()]
-
-        n_arch = len(dataset_architectures)
-        x = np.arange(n_arch)
-
-        # Plot OS-OS bars
-        os_os_means = []
-        os_os_stds = []
-        for arch in dataset_architectures:
-            row = os_os_data[os_os_data['architecture'] == arch]
-            if len(row) > 0:
-                os_os_means.append(row['eer_mean'].values[0])
-                os_os_stds.append(row['eer_std'].values[0])
-            else:
-                os_os_means.append(0)
-                os_os_stds.append(0)
-        ax.bar(x - bar_width / 2, os_os_means, bar_width,
-               yerr=os_os_stds, capsize=5,
-               color=colors['OS-OS'], alpha=0.8, edgecolor='black',
-               label=labels['OS-OS'])
-
-        # Plot SS-SS bars
-        ss_ss_means = []
-        ss_ss_stds = []
-        for arch in dataset_architectures:
-            row = ss_ss_data[ss_ss_data['architecture'] == arch]
-            if len(row) > 0:
-                ss_ss_means.append(row['eer_mean'].values[0])
-                ss_ss_stds.append(row['eer_std'].values[0])
-            else:
-                ss_ss_means.append(0)
-                ss_ss_stds.append(0)
-        ax.bar(x + bar_width / 2, ss_ss_means, bar_width,
-               yerr=ss_ss_stds, capsize=5,
-               color=colors['SS-SS'], alpha=1.0, edgecolor='black',
-               label=labels['SS-SS'])
-
-        # Customize the plot
-        ax.set_ylabel('EER', fontsize=10)
-        ax.set_ylim(0, global_max)
-        ax.set_xticks(x)
-        ax.set_xticklabels(dataset_architectures, rotation=45, ha='right', fontsize=9)
-        ax.grid(axis='y', alpha=0.3, linestyle='--')
-        ax.legend(loc='upper right', fontsize=8)
-
-    plt.tight_layout()
-
-def repro_relative_eer_ss(archs: Optional[List[str]] = None):
+def relative_eer(comparison_type: str = 'test_strategy',
+                      archs: Optional[List[str]] = None,
+                      datasets: Optional[List[str]] = None,
+                      figsize: Tuple[int, int] = (14, 6),
+                      ylabel: str = 'Relative EER improvement (%)'):
+    """
+    Plot relative EER comparisons.
+    
+    Parameters:
+    -----------
+    comparison_type : str
+        Type of comparison: 'test_strategy' or 'training_strategy'
+        - 'test_strategy': Compare test strategies (OS vs SS) for same training strategy
+        - 'training_strategy': Compare training strategies (OS-OS vs SS-SS)
+    archs : List[str]
+        Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+    datasets : List[str]
+        Datasets to include. Default: ['voxceleb']
+    figsize : Tuple[int, int]
+        Figure size. Default: (14, 6)
+    ylabel : str
+        Y-axis label. Default: 'Relative EER improvement (%)'
+    """
     if archs is None:
         archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
-
-    # Plot relative EER difference: EER(train=SS, test=SS) vs EER(train=OS, test=OS) for each architecture and dataset
-    # Filter for OS and SS training strategies with matching test strategies
-    df_os_os = df_repro[(df_repro['train_strategy'] == 'OS') & (df_repro['test_strategy'] == 'OS')].copy()
-    df_ss_ss = df_repro[(df_repro['train_strategy'] == 'SS') & (df_repro['test_strategy'] == 'SS')].copy()
-
-    # Get unique datasets
-    datasets = ['voxceleb']  # sorted(df_repro['dataset'].unique())
-
-    # Calculate global max for y-axis alignment
-    all_rel_diffs = []
-    all_rel_errors = []
-
-    for dataset in datasets:
-        for arch in archs:
-            # Get EER for train=OS,test=OS and train=SS,test=SS for this dataset
-            os_os_row = df_os_os[(df_os_os['dataset'] == dataset) & (df_os_os['architecture'] == arch)]
-            ss_ss_row = df_ss_ss[(df_ss_ss['dataset'] == dataset) & (df_ss_ss['architecture'] == arch)]
-
-            if len(os_os_row) > 0 and len(ss_ss_row) > 0:
-                eer_os_os = os_os_row['eer_mean'].values[0]
-                eer_ss_ss = ss_ss_row['eer_mean'].values[0]
-                std_os_os = os_os_row['eer_std'].values[0]
-                std_ss_ss = ss_ss_row['eer_std'].values[0]
-
-                # Relative difference: (EER(train=OS, test=OS) - EER(train=SS, test=SS)) / EER(train=SS, test=SS) * 100%
-                rel_diff = ((eer_os_os - eer_ss_ss) / eer_ss_ss) * 100
-
-                # Error propagation for relative difference
-                # For f = (x - y) / y where x = eer_os_os, y = eer_ss_ss
-                if eer_ss_ss != 0:
-                    term1 = (std_os_os / eer_ss_ss) ** 2
-                    term2 = ((eer_os_os - eer_ss_ss) / (eer_ss_ss ** 2) * std_ss_ss) ** 2
-                    rel_error = (term1 + term2) ** 0.5 * 100  # Convert to percent
+    if datasets is None:
+        datasets = ['voxceleb']
+    
+    if comparison_type == 'training_strategy':
+        # Compare OS-OS vs SS-SS
+        # Filter for OS and SS training strategies with matching test strategies
+        df_os_os = df_repro[(df_repro['train_strategy'] == 'OS') & (df_repro['test_strategy'] == 'OS')].copy()
+        df_ss_ss = df_repro[(df_repro['train_strategy'] == 'SS') & (df_repro['test_strategy'] == 'SS')].copy()
+        
+        # Calculate global max for y-axis alignment
+        all_rel_diffs = []
+        all_rel_errors = []
+        
+        for dataset in datasets:
+            for arch in archs:
+                # Get EER for train=OS,test=OS and train=SS,test=SS
+                os_os_row = df_os_os[(df_os_os['dataset'] == dataset) & (df_os_os['architecture'] == arch)]
+                ss_ss_row = df_ss_ss[(df_ss_ss['dataset'] == dataset) & (df_ss_ss['architecture'] == arch)]
+                
+                if len(os_os_row) > 0 and len(ss_ss_row) > 0:
+                    eer_os_os = os_os_row['eer_mean'].values[0]
+                    eer_ss_ss = ss_ss_row['eer_mean'].values[0]
+                    std_os_os = os_os_row['eer_std'].values[0]
+                    std_ss_ss = ss_ss_row['eer_std'].values[0]
+                    
+                    # Relative difference
+                    rel_diff = ((eer_os_os - eer_ss_ss) / eer_ss_ss) * 100
+                    
+                    # Error propagation
+                    if eer_ss_ss != 0:
+                        term1 = (std_os_os / eer_ss_ss) ** 2
+                        term2 = ((eer_os_os - eer_ss_ss) / (eer_ss_ss ** 2) * std_ss_ss) ** 2
+                        rel_error = (term1 + term2) ** 0.5 * 100
+                    else:
+                        rel_error = 0
+                    
+                    all_rel_diffs.append(abs(rel_diff))
+                    all_rel_errors.append(rel_error)
+        
+        # Calculate global max for y-axis alignment
+        global_max = (max(all_rel_diffs) + max(all_rel_errors)) * 1.25 if all_rel_diffs and all_rel_errors else 1.0
+        
+        # Set up subplots
+        fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+        
+        # Handle single dataset case
+        if len(datasets) == 1:
+            axes = [axes]
+        
+        # Create bar charts for each dataset
+        for i, dataset in enumerate(datasets):
+            ax = axes[i]
+            
+            # Get architectures present in this dataset
+            dataset_architectures = [arch for arch in archs if 
+                                     arch in df_os_os[df_os_os['dataset'] == dataset]['architecture'].unique()]
+            
+            # Calculate relative differences and errors
+            rel_differences = []
+            rel_errors = []
+            
+            for arch in dataset_architectures:
+                os_os_row = df_os_os[(df_os_os['dataset'] == dataset) & (df_os_os['architecture'] == arch)]
+                ss_ss_row = df_ss_ss[(df_ss_ss['dataset'] == dataset) & (df_ss_ss['architecture'] == arch)]
+                
+                if len(os_os_row) > 0 and len(ss_ss_row) > 0:
+                    eer_os_os = os_os_row['eer_mean'].values[0]
+                    eer_ss_ss = ss_ss_row['eer_mean'].values[0]
+                    std_os_os = os_os_row['eer_std'].values[0]
+                    std_ss_ss = ss_ss_row['eer_std'].values[0]
+                    
+                    # Relative difference
+                    rel_diff = ((eer_os_os - eer_ss_ss) / eer_ss_ss) * 100
+                    
+                    # Error propagation
+                    if eer_ss_ss != 0:
+                        term1 = (std_os_os / eer_ss_ss) ** 2
+                        term2 = ((eer_os_os - eer_ss_ss) / (eer_ss_ss ** 2) * std_ss_ss) ** 2
+                        rel_error = (term1 + term2) ** 0.5 * 100
+                    else:
+                        rel_error = 0
+                    
+                    rel_differences.append(rel_diff)
+                    rel_errors.append(rel_error)
                 else:
-                    rel_error = 0
-
-                all_rel_diffs.append(abs(rel_diff))
-                all_rel_errors.append(rel_error)
-
-    # Calculate global max for y-axis alignment
-    global_max = (max(all_rel_diffs) + max(all_rel_errors)) * 1.25 if all_rel_diffs and all_rel_errors else 1.0
-
-    # Set up 1x2 grid for 2 datasets
-    fig, axes = plt.subplots(1, len(datasets), figsize=(14, 6), sharey=True)
-
-    # Handle single dataset case
-    if len(datasets) == 1:
-        axes = [axes]
-
-    # Create bar charts for each dataset
-    for i, dataset in enumerate(datasets):
-        ax = axes[i]
-
-        # Get data for this dataset
-        dataset_architectures = [arch for arch in archs if
-                                 arch in df_os_os[df_os_os['dataset'] == dataset]['architecture'].unique()]
-
+                    rel_differences.append(0)
+                    rel_errors.append(0)
+            
+            # Set up x positions
+            n_arch = len(dataset_architectures)
+            x = np.arange(n_arch)
+            
+            # Plot bars with error bars
+            ax.bar(x, rel_differences, yerr=rel_errors, capsize=5,
+                   color=DEFAULT_GREEN, **BAR_STYLE_SOLID)
+            
+            # Style the axis
+            _style_axis(ax,
+                       ylabel=ylabel,
+                       xticks=x,
+                       xticklabels=dataset_architectures)
+            ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+            ax.set_ylim(-global_max, 0)  # Symmetric around zero
+        
+        plt.tight_layout()
+        
+    else:  # comparison_type == 'test_strategy'
+        # Compare test strategies for same training strategy
+        dataset = datasets[0] if datasets else 'voxceleb'
+        train_strategy = 'OS'  # Default for test strategy comparison
+        test_strategy_1 = 'OS'
+        test_strategy_2 = 'SS'
+        
+        # Filter for specific dataset and training strategy
+        df_filtered = df_repro[(df_repro['dataset'] == dataset) & 
+                              (df_repro['train_strategy'] == train_strategy)].copy()
+        
+        # Get architectures present in filtered data
+        filtered_archs = [arch for arch in archs if arch in df_filtered['architecture'].unique()]
+        
         # Calculate relative differences and errors
         rel_differences = []
         rel_errors = []
-
-        for arch in dataset_architectures:
-            os_os_row = df_os_os[(df_os_os['dataset'] == dataset) & (df_os_os['architecture'] == arch)]
-            ss_ss_row = df_ss_ss[(df_ss_ss['dataset'] == dataset) & (df_ss_ss['architecture'] == arch)]
-
-            if len(os_os_row) > 0 and len(ss_ss_row) > 0:
-                eer_os_os = os_os_row['eer_mean'].values[0]
-                eer_ss_ss = ss_ss_row['eer_mean'].values[0]
-                std_os_os = os_os_row['eer_std'].values[0]
-                std_ss_ss = ss_ss_row['eer_std'].values[0]
-
-                # Relative difference: (EER(train=OS, test=OS) - EER(train=SS, test=SS)) / EER(train=SS, test=SS) * 100%
-                rel_diff = ((eer_os_os - eer_ss_ss) / eer_ss_ss) * 100
-
+        arch_labels = []
+        
+        for arch in filtered_archs:
+            # Get EER for both test strategies
+            arch_data = df_filtered[df_filtered['architecture'] == arch]
+            eer_row_1 = arch_data[arch_data['test_strategy'] == test_strategy_1]
+            eer_row_2 = arch_data[arch_data['test_strategy'] == test_strategy_2]
+            
+            if len(eer_row_1) > 0 and len(eer_row_2) > 0:
+                eer_1 = eer_row_1['eer_mean'].values[0]
+                eer_2 = eer_row_2['eer_mean'].values[0]
+                std_1 = eer_row_1['eer_std'].values[0]
+                std_2 = eer_row_2['eer_std'].values[0]
+                
+                # Relative difference: (EER_1 - EER_2) / EER_2 * 100%
+                rel_diff = ((eer_1 - eer_2) / eer_2) * 100
+                
                 # Error propagation
-                if eer_ss_ss != 0:
-                    term1 = (std_os_os / eer_ss_ss) ** 2
-                    term2 = ((eer_os_os - eer_ss_ss) / (eer_ss_ss ** 2) * std_ss_ss) ** 2
+                if eer_2 != 0:
+                    term1 = (std_1 / eer_2) ** 2
+                    term2 = ((eer_1 - eer_2) / (eer_2 ** 2) * std_2) ** 2
                     rel_error = (term1 + term2) ** 0.5 * 100
                 else:
                     rel_error = 0
-
+                
                 rel_differences.append(rel_diff)
                 rel_errors.append(rel_error)
+                arch_labels.append(arch)
             else:
                 rel_differences.append(0)
                 rel_errors.append(0)
-
+                arch_labels.append(arch)
+        
+        # Create the plot
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        
         # Set up x positions
-        n_arch = len(dataset_architectures)
+        n_arch = len(arch_labels)
         x = np.arange(n_arch)
-
+        
         # Plot bars with error bars
         ax.bar(x, rel_differences, yerr=rel_errors, capsize=5,
-               color='#2ca02c', alpha=1.0, edgecolor='black')
-
-        # Customize the plot
-        ax.set_ylabel('Relative EER improvement (%)', fontsize=10)
-        ax.set_xticks(x)
-        ax.set_xticklabels(dataset_architectures, rotation=45, ha='right', fontsize=9)
-        ax.grid(axis='y', alpha=0.3, linestyle='--')
-        ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
-        ax.set_ylim(-global_max, 0)  # Symmetric around zero
-
-    plt.tight_layout()
+               color=DEFAULT_GREEN, **BAR_STYLE_SOLID)
+        
+        # Style the plot
+        _style_axis(ax,
+                   ylabel=ylabel,
+                   xticks=x,
+                   xticklabels=arch_labels)
+        ax.axhline(0, color='gray', linestyle='--', alpha=0.5)  # Zero reference line
+        
+        plt.tight_layout()
