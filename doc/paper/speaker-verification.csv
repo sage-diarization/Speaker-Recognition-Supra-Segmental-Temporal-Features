@@ -17,6 +17,12 @@ paper,ResNet-timit-OS/final,timit,ResNet,OS,SU,6.59,0.25
 paper,ResNet-timit-SS/final,timit,ResNet,SS,OS,9.21,1.15
 paper,ResNet-timit-SS/final,timit,ResNet,SS,SS,5.8,0.11
 paper,ResNet-timit-SS/final,timit,ResNet,SS,SU,6.37,0.35
+paper,F-ResNet-timit-OS/final,timit,F-ResNet,OS,OS,12.20,0.25
+paper,F-ResNet-timit-OS/final,timit,F-ResNet,OS,SS,20.47,1.50
+paper,F-ResNet-timit-OS/final,timit,F-ResNet,OS,SU,23.41,1.73
+paper,F-ResNet-timit-SS/final,timit,F-ResNet,SS,OS,15.91,0.90
+paper,F-ResNet-timit-SS/final,timit,F-ResNet,SS,SS,8.95,0.13
+paper,F-ResNet-timit-SS/final,timit,F-ResNet,SS,SU,9.86,0.11
 paper,CNN-voxceleb-OS/final,voxceleb,CNN,OS,OS,25.75,0.13
 paper,CNN-voxceleb-OS/final,voxceleb,CNN,OS,SS,33.26,0.29
 paper,CNN-voxceleb-OS/final,voxceleb,CNN,OS,SU,32.7,0.34
@@ -35,3 +41,9 @@ paper,ResNet-voxceleb-OS/final,voxceleb,ResNet,OS,SU,34.11,0.54
 paper,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,OS,20.74,0.46
 paper,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SS,20.36,0.23
 paper,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SU,21.02,0.34
+paper,FResNet-voxceleb-OS/final,voxceleb,F-ResNet,OS,OS,2.39,0.05
+paper,FResNet-voxceleb-OS/final,voxceleb,F-ResNet,OS,SS,23.45,1.29
+paper,FResNet-voxceleb-OS/final,voxceleb,F-ResNet,OS,SU,25.02,1.21
+paper,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,OS,10.85,0.43
+paper,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,SS,6.60,0.19
+paper,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,SU,7.02,0.24
