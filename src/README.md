@@ -1,4 +1,4 @@
-# Supra-segmental temporal feature test (CNN / RNN / ResNet / Conformer)
+# Supra-segmental temporal feature test (CNN / RNN / ResNet / Conformer / F-ResNet)
 
 PyTorch reimplementation of the Section 2 time-scrambling test from
 Neururer et al. 2024 ("Deep neural networks for automatic speaker
@@ -6,7 +6,7 @@ recognition do not learn supra-segmental temporal features"). See
 `../context/docs/` for the paper and `../context/src/` for the original
 TensorFlow reference implementation this was ported from.
 
-Four speaker-embedding backends are available via `model.type`:
+Five speaker-embedding backends are available via `model.type`:
 
 - `"CNN"` (default): a direct port of `context/src/models/backend/CNN.py`,
   the CNN [12] backend of Neururer et al. 2024's Table 1/2.
@@ -16,15 +16,20 @@ Four speaker-embedding backends are available via `model.type`:
   defaults (see `configs/rnn_timit.yaml`).
 - `"ResNet"`: a direct port of `context/src/models/backend/ResNet34s.py` +
   its GhostVLAD aggregation (`context/src/models/aggregation/GhostVlad.py`),
-  the ResNet [27] backend. Unlike the other three backends, its original
+  the ResNet [27] backend. Unlike the other backends, its original
   front-end is a raw (non-mel) magnitude spectrogram with a hamming window
   (`context/src/00_configs/01_transformation/ResNet.json`) -- see
   `configs/resnet_timit.yaml`'s `transformation:`/`resnet:` sections and
-  `src/models/resnet.py`'s module docstrings. The paper's fourth model,
-  F-ResNet (Fast ResNet-34, sourced from the external
-  `github.com/clovaai/voxceleb_trainer` rather than `context/src`, and
-  called "out of competition" on TIMIT due to its VoxCeleb-tuned front-end),
-  isn't ported here.
+  `src/models/resnet.py`'s module docstrings.
+- `"FResNet"`: a PyTorch port of the ResNetSE34L model from
+  `github.com/clovaai/voxceleb_trainer` (Chung et al. 2020, Interspeech),
+  the Fast ResNet-34 (F-ResNet) [29] backend from Neururer et al. 2024's
+  Table 3. Uses SE-ResNet blocks with Squeeze-and-Excitation, Self-Attentive
+  Pooling (SAP) or Attentive Statistics Pooling (ASP), and a mel spectrogram
+  front-end with 40 mel bins. See `src/models/fresnet.py` for architecture
+  details and `configs/fresnet-voxceleb.yaml` for its hyperparameters
+  (`fresnet:` section). This is the paper's fourth model, previously called
+  "out of competition" on TIMIT due to its VoxCeleb-tuned front-end.
 - `"Conformer"`: a from-scratch PyTorch implementation of the Gulati et al.
   2020 Conformer encoder ("Conformer: Convolution-augmented Transformer for
   Speech Recognition", see `../context/docs/`), adapted from an ASR encoder
@@ -33,11 +38,11 @@ Four speaker-embedding backends are available via `model.type`:
   details and configs/conformer_timit.yaml for its hyperparameters
   (`conformer:` section).
 
-All four expose the same `(backend, bottleneck)` output contract (see
+All five expose the same `(backend, bottleneck)` output contract (see
 "Adding a new model backend" below), so switching `model.type` swaps only
 the embedding backbone -- everything else (loss, training loop, evaluation)
 stays identical, which is what makes the runs comparable. The one exception
-is ResNet's own front-end transformation (mel vs. linear spectrogram),
+is ResNet's and F-ResNet's own front-end transformation (linear vs. mel spectrogram),
 which the original also varies per model for the same reason (Section 2.2:
 front-end/hyperparameters are kept faithful to each model's own source
 paper, not unified across models).
@@ -235,10 +240,12 @@ pip install -r requirements.txt
 python -m src.experiment --config configs/cnn-timit.yaml         # CNN backend on TIMIT
 python -m src.experiment --config configs/rnn-timit.yaml         # RNN backend on TIMIT
 python -m src.experiment --config configs/resnet-timit.yaml      # ResNet backend on TIMIT
+python -m src.experiment --config configs/fresnet-timit.yaml      # F-ResNet backend on TIMIT
 python -m src.experiment --config configs/conformer-timit.yaml   # Conformer backend on TIMIT
 python -m src.experiment --config configs/cnn-voxceleb.yaml      # CNN backend on VoxCeleb
 python -m src.experiment --config configs/rnn-voxceleb.yaml      # RNN backend on VoxCeleb
 python -m src.experiment --config configs/resnet-voxceleb.yaml   # ResNet backend on VoxCeleb
+python -m src.experiment --config configs/fresnet-voxceleb.yaml   # F-ResNet backend on VoxCeleb
 python -m src.experiment --config configs/conformer-voxceleb.yaml   # Conformer backend on VoxCeleb
 ```
 
