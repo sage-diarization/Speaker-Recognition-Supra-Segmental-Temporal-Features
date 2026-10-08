@@ -456,11 +456,7 @@ def run_experiment(config, corpus=None, strategies=None):
             if run_idx in manifest["completed"]:
                 continue
 
-            dataset = SegmentDataset(
-                train_utterances, segment_length, train_strategy,
-                fba_corruption_config=config.training.fba_corruption,
-                is_training=True
-            )
+            dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
             checkpoint_path = _checkpoint_path(config, train_strategy, run_idx)
