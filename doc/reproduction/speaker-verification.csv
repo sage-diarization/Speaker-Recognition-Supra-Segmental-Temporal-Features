@@ -56,6 +56,6 @@ zctctcwk,ResNet-voxceleb-SS/final,voxceleb,ResNet,SS,SU,20.615763979819732,0.378
 9u1hv3bt,FResNet-voxceleb-OS/final,voxceleb,F-ResNet,OS,OS,6.183854385742707,0.20966939346307917
 9u1hv3bt,FResNet-voxceleb-OS/final,voxceleb,F-ResNet,OS,SS,32.71591660265778,0.8059167142920777
 9u1hv3bt,FResNet-voxceleb-OS/final,voxceleb,F-ResNet,OS,SU,33.09926839065291,0.810361449469001
-37mt6o7s,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,OS,
-37mt6o7s,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,SS,
-37mt6o7s,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,SU,
+37mt6o7s,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,OS,20.834359772307668,0.28127736754255206
+37mt6o7s,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,SS,14.912215601612406,0.2892014814939047
+37mt6o7s,FResNet-voxceleb-SS/final,voxceleb,F-ResNet,SS,SU,14.92744448622369,0.2658117905763231
