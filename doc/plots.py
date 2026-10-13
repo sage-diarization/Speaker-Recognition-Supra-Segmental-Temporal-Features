@@ -683,3 +683,330 @@ def relative_eer(comparison_type: str = 'test_strategy',
         ax.axhline(0, color='gray', linestyle='--', alpha=0.5)  # Zero reference line
         
         plt.tight_layout()
+
+def sst_relative_effects(archs: Optional[List[str]] = None,
+                         datasets: Optional[List[str]] = None,
+                         figsize: Tuple[int, int] = (14, 6),
+                         ylabel: str = 'Relative EER change (%)'):
+    """
+    Plot the relative EER effects of SST and distribution shift, based on the model
+    EER = SST_L + SST_T + ARCH + SHIFT with
+        SST_L = SST learned during training, SST_T = SST leveraged during test,
+        ARCH = architecture, SHIFT = distribution shift:
+
+    EER(OS,OS) = SST_L + SST_T + ARCH
+    EER(OS,SS) = SST_L + ARCH + SHIFT
+    EER(SS,SS) = ARCH
+    EER(SS,OS) = ARCH + SHIFT
+
+    Each term is made relative to the EER it is applied to (negative = lower EER):
+
+    SST cost      = SST_L / ARCH
+    SST leveraged = SST_T / (SST_L + ARCH)
+    Net SST       = EER(OS,OS) / EER(SS,SS) - 1
+    Shift         = SHIFT / ARCH
+
+    Parameters:
+    -----------
+    archs : List[str]
+        Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+    datasets : List[str]
+        Datasets to include, one subplot each. Default: all datasets
+    figsize : Tuple[int, int]
+        Figure size. Default: (14, 6)
+    ylabel : str
+        Y-axis label. Default: 'Relative EER change (%)'
+    """
+    if archs is None:
+        archs = DEFAULT_ARCHS
+    if datasets is None:
+        datasets = sorted(df_repro['dataset'].unique())
+
+    indexed = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])
+    mean = indexed['eer_mean']
+    std = indexed['eer_std']
+
+    # Model terms solved from (EER(OS,OS), EER(OS,SS), EER(SS,SS), EER(SS,OS))
+    ARCH = lambda oo, os, ss, so: ss
+    SHIFT = lambda oo, os, ss, so: so - ss
+    SST_L = lambda oo, os, ss, so: os - so
+    SST_T = lambda oo, os, ss, so: oo - os + so - ss
+
+    effects = [
+        ('SST cost: SST_L / ARCH', '#ff7f0e',
+         lambda *eer: SST_L(*eer) / ARCH(*eer)),
+        ('SST leveraged: SST_T / (SST_L + ARCH)', '#1f77b4',
+         lambda *eer: SST_T(*eer) / (SST_L(*eer) + ARCH(*eer))),
+        ('Net SST: EER(OS,OS) / EER(SS,SS) - 1', DEFAULT_GREEN,
+         lambda oo, os_, ss, so: oo / ss - 1),
+        ('Shift: SHIFT / ARCH', 'lightgray',
+         lambda *eer: SHIFT(*eer) / ARCH(*eer)),
+    ]
+    conditions = [('OS', 'OS'), ('OS', 'SS'), ('SS', 'SS'), ('SS', 'OS')]
+
+    fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+
+    # Handle single dataset case
+    if len(datasets) == 1:
+        axes = [axes]
+
+    bar_width = 0.8 / len(effects)
+
+    for i, dataset in enumerate(datasets):
+        ax = axes[i]
+
+        dataset_architectures = [arch for arch in archs if
+                                 arch in df_repro[df_repro['dataset'] == dataset]['architecture'].unique()]
+        x = np.arange(len(dataset_architectures))
+
+        for k, (label, color, f) in enumerate(effects):
+            values = []
+            errors = []
+            for arch in dataset_architectures:
+                m = np.array([mean[(dataset, arch, *c)] for c in conditions])
+                sd = np.array([std[(dataset, arch, *c)] for c in conditions])
+                value = f(*m)
+
+                # Error propagation assuming independent EER estimates,
+                # with partial derivatives from forward differences
+                eps = 1e-6
+                gradient = np.array([(f(*(m + eps * np.eye(4)[j])) - value) / eps for j in range(4)])
+
+                values.append(value * 100)
+                errors.append(np.sqrt(np.sum((gradient * sd) ** 2)) * 100)
+
+            offset = (k - (len(effects) - 1) / 2) * bar_width
+            ax.bar(x + offset, values, bar_width,
+                   yerr=errors, capsize=3,
+                   color=color, label=label, **BAR_STYLE_SOLID)
+
+        _style_axis(ax,
+                   title=f'dataset = {dataset}',
+                   ylabel=ylabel if i == 0 else None,
+                   xticks=x,
+                   xticklabels=dataset_architectures)
+        ax.legend(**{**LEGEND_STYLE, 'loc': 'upper left'})
+        ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+
+
+def cross_eer(archs: Optional[List[str]] = None,
+              dataset: str = 'voxceleb',
+              figsize: Tuple[int, int] = (14, 6),
+              ylabel: str = 'EER'):
+    """
+    Plot the out-of-distribution EERs EER(train=OS, test=SS) and EER(train=SS, test=OS).
+
+    Parameters:
+    -----------
+    archs : List[str]
+        Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+    dataset : str
+        Dataset to plot. Default: 'voxceleb'
+    figsize : Tuple[int, int]
+        Figure size. Default: (14, 6)
+    ylabel : str
+        Y-axis label. Default: 'EER'
+    """
+    if archs is None:
+        archs = DEFAULT_ARCHS
+
+    indexed = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])
+    dataset_architectures = [arch for arch in archs if
+                             arch in df_repro[df_repro['dataset'] == dataset]['architecture'].unique()]
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+
+    x = np.arange(len(dataset_architectures))
+    bar_width = 0.4
+
+    for offset, (train, test), color in [
+        (-bar_width / 2, ('OS', 'SS'), DEFAULT_COLORMAP['OS']),
+        (bar_width / 2, ('SS', 'OS'), DEFAULT_COLORMAP['SS']),
+    ]:
+        rows = [indexed.loc[(dataset, arch, train, test)] for arch in dataset_architectures]
+        ax.bar(x + offset, [row['eer_mean'] for row in rows], bar_width,
+               yerr=[row['eer_std'] for row in rows], capsize=5,
+               color=color, label=f'EER(train={train}, test={test})',
+               **BAR_STYLE_SOLID)
+
+    _style_axis(ax,
+               title=f'dataset = {dataset}',
+               ylabel=ylabel,
+               xticks=x,
+               xticklabels=dataset_architectures)
+
+    plt.tight_layout()
+
+
+def eer_os_os_decomposition(archs: Optional[List[str]] = None,
+                            datasets: Optional[List[str]] = None,
+                            figsize: Tuple[int, int] = (14, 6),
+                            ylabel: str = 'Accuracy \n (1 - Error Rate)'):
+    """
+    Plot 100 - EER(OS,OS) (higher is better) split into the parts responsible for
+    the architecture and SST, based on the model of sst_relative_effects():
+
+    EER(OS,OS) = ARCH + (SST_L + SST_T),  ARCH = EER(SS,SS)
+
+    ARCH part = 100 - ARCH
+    SST part  = -(SST_L + SST_T) = EER(SS,SS) - EER(OS,OS)
+
+    The label above each bar gives the SST part relative to the ARCH part.
+
+    Parameters:
+    -----------
+    archs : List[str]
+        Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+    datasets : List[str]
+        Datasets to include, one subplot each. Default: all datasets
+    figsize : Tuple[int, int]
+        Figure size. Default: (14, 6)
+    ylabel : str
+        Y-axis label. Default: '100 - EER (%)'
+    """
+    if archs is None:
+        archs = DEFAULT_ARCHS
+    if datasets is None:
+        datasets = sorted(df_repro['dataset'].unique())
+
+    indexed = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])
+    mean = indexed['eer_mean']
+    std = indexed['eer_std']
+
+    fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+
+    # Handle single dataset case
+    if len(datasets) == 1:
+        axes = [axes]
+
+    bar_width = 0.6
+
+    for i, dataset in enumerate(datasets):
+        ax = axes[i]
+
+        dataset_architectures = [arch for arch in archs if
+                                 arch in df_repro[df_repro['dataset'] == dataset]['architecture'].unique()]
+        x = np.arange(len(dataset_architectures))
+
+        eer_os_os = np.array([mean[(dataset, arch, 'OS', 'OS')] for arch in dataset_architectures])
+        arch_part = np.array([mean[(dataset, arch, 'SS', 'SS')] for arch in dataset_architectures])
+        arch_improvement = 100 - arch_part
+        sst_improvement = arch_part - eer_os_os
+
+        ax.bar(x, arch_improvement, bar_width,
+               # yerr=[std[(dataset, arch, 'OS', 'OS')] for arch in dataset_architectures],
+               capsize=5,
+               color=DEFAULT_COLORMAP['OS'], label='Model',
+               **BAR_STYLE_SOLID)
+        ax.bar(x, sst_improvement, bar_width, bottom=arch_improvement,
+               color=DEFAULT_GREEN, label='SST',
+               **BAR_STYLE_SOLID)
+        # Offset so it doesn't overlap the EER(OS,OS) error bar
+        #ax.errorbar(x, arch_part,
+        #            yerr=[std[(dataset, arch, 'SS', 'SS')] for arch in dataset_architectures],
+        #            fmt='none', capsize=5, ecolor='black')
+
+        for xi, top, sst, arch in zip(x, np.maximum(arch_improvement, 100 - eer_os_os),
+                                      sst_improvement, arch_improvement):
+            ax.text(xi, top * 1.0, f'{sst / arch:+.1%}',
+                    ha='center', va='bottom', fontsize=9)
+
+        _style_axis(ax,
+                   title=f'dataset = {dataset}',
+                   ylabel=ylabel if i == 0 else None,
+                   xticks=x,
+                   xticklabels=dataset_architectures)
+        ax.legend(**{**LEGEND_STYLE, 'loc': 'upper right'})
+        ax.set_ylim(0, 115)  # Headroom so the legend doesn't cover the labels
+
+    plt.tight_layout()
+
+
+def accuracy_sst_range(archs: Optional[List[str]] = None,
+                       datasets: Optional[List[str]] = None,
+                       figsize: Tuple[int, int] = (14, 6),
+                       ylabel: Optional[str] = None,
+                       normalize: bool = False):
+    """
+    Plot the accuracy 100 - EER(OS,OS) per architecture with the range of the part
+    achieved by leveraging SST:
+
+    SST (min) = EER(SS,SS) - EER(OS,OS)  (net SST benefit)
+    SST (max) = EER(OS,SS) - EER(OS,OS)  (includes the distribution shift)
+
+    The label above each bar gives both as a share of the accuracy. With
+    normalize=True, each bar is scaled to 100% of its accuracy.
+
+    Parameters:
+    -----------
+    archs : List[str]
+        Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+    datasets : List[str]
+        Datasets to include, one subplot each. Default: all datasets
+    figsize : Tuple[int, int]
+        Figure size. Default: (14, 6)
+    ylabel : str
+        Y-axis label. Default: 'Accuracy \\n (1 - Error Rate)', or
+        'Attribution of accuracy (%)' if normalize
+    normalize : bool
+        Whether to scale each bar to 100% of its accuracy. Default: False
+    """
+    if archs is None:
+        archs = DEFAULT_ARCHS
+    if datasets is None:
+        datasets = sorted(df_repro['dataset'].unique())
+    if ylabel is None:
+        ylabel = 'SST attribution (%)' if normalize else 'Accuracy \n (1 - Error Rate)'
+
+    mean = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])['eer_mean']
+
+    fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+
+    # Handle single dataset case
+    if len(datasets) == 1:
+        axes = [axes]
+
+    bar_width = 0.6
+
+    for i, dataset in enumerate(datasets):
+        ax = axes[i]
+
+        dataset_architectures = [arch for arch in archs if
+                                 arch in df_repro[df_repro['dataset'] == dataset]['architecture'].unique()]
+        x = np.arange(len(dataset_architectures))
+
+        eer = lambda train, test: np.array([mean[(dataset, arch, train, test)] for arch in dataset_architectures])
+        accuracy = 100 - eer('OS', 'OS')
+        sst_min = eer('SS', 'SS') - eer('OS', 'OS')
+        sst_max = eer('OS', 'SS') - eer('OS', 'OS')
+
+        if normalize:
+            scale = 100 / accuracy
+            accuracy, sst_min, sst_max = accuracy * scale, sst_min * scale, sst_max * scale
+
+        # Model part, the range in which the SST part may start (light), and the
+        # minimal SST part; one outline around the whole bar
+        ax.bar(x, accuracy - sst_max, bar_width,
+               color='whitesmoke', edgecolor='none')
+        ax.bar(x, sst_max - sst_min, bar_width, bottom=accuracy - sst_max,
+               color=DEFAULT_COLORMAP['OS'], **BAR_STYLE_SHADOW)
+        ax.bar(x, sst_min, bar_width, bottom=accuracy - sst_min,
+               color=DEFAULT_COLORMAP['OS'], edgecolor='none')
+        ax.bar(x, accuracy, bar_width, fill=False, edgecolor='none')
+
+        for xi, acc, lo, hi in zip(x, accuracy, sst_min, sst_max):
+            ax.text(xi, acc + 1, f'{lo / acc:.1%}–{hi / acc:.1%}',
+                    ha='center', va='bottom', fontsize=9)
+
+        _style_axis(ax,
+                   title=f'dataset = {dataset}',
+                   ylabel=ylabel if i == 0 else None,
+                   xticks=x,
+                   xticklabels=dataset_architectures)
+        ax.set_ylim(0, 110)  # Headroom so the legend doesn't cover the labels
+        ax.set_yticks(range(0, 101, 20))
+
+    plt.tight_layout()
+
