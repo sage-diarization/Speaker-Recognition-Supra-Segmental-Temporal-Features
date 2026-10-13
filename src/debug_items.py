@@ -41,11 +41,12 @@ def _imshow(ax, features, transformation, color_scale):
 
 
 def plot_items(wav_path, output_path, segment_length, seed=None, transformation=None, only_strategies=None,
-               normalise=True):
+               normalise=True, full_only=False):
     """Draws one item per strategy from a SegmentDataset holding only the
     utterance at wav_path and writes the comparison figure to output_path.
     If only_strategies is given, plots just those strategies' items, without
-    the full utterance and source-frame panels. If normalise is False, the
+    the full utterance and source-frame panels. If full_only is True, plots
+    just the full utterance (no items are drawn). If normalise is False, the
     features are featurized like featurize_waveform minus its per-frame
     standardization."""
     transformation = transformation or TransformationConfig()
@@ -59,7 +60,7 @@ def plot_items(wav_path, output_path, segment_length, seed=None, transformation=
     label = Path(wav_path).parent.name
 
     items = {}
-    for name in only_strategies or DRAW_STRATEGIES:
+    for name in [] if full_only else only_strategies or DRAW_STRATEGIES:
         dataset = SegmentDataset([(full, label)], segment_length, name, seed=seed)
         tensor, _ = dataset[0]
         items[name] = tensor[0].numpy()  # drop channel dim -> (frames, freqs)
@@ -75,7 +76,13 @@ def plot_items(wav_path, output_path, segment_length, seed=None, transformation=
         color_label = None # "level"
     freq_label = "mel bin" if transformation.type == "mel" else "freq bin"
 
-    if only_strategies:
+    if full_only:
+        fig = plt.figure(figsize=(14, 4), layout="constrained")
+        ax_full = fig.add_subplot()
+        im = _imshow(ax_full, full, transformation, color_scale)
+        ax_full.set(title=f"full utterance: {Path(wav_path).name} (speaker {label})", xlabel="time [s]",
+                    ylabel=freq_label)
+    elif only_strategies:
         fig = plt.figure(figsize=(14, 4), layout="constrained")
         grid = fig.add_gridspec(1, len(items))
         fig.suptitle(f"{Path(wav_path).name} (speaker {label})")
