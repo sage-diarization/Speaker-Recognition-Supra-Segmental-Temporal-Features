@@ -2,6 +2,9 @@ from typing import List, Optional, Dict, Any, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.legend_handler import HandlerTuple
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 # Set matplotlib style for print-friendly plots (white background)
 plt.style.use('default')
@@ -843,7 +846,7 @@ def cross_eer(archs: Optional[List[str]] = None,
 def eer_os_os_decomposition(archs: Optional[List[str]] = None,
                             datasets: Optional[List[str]] = None,
                             figsize: Tuple[int, int] = (14, 6),
-                            ylabel: str = 'Accuracy \n (1 - Error Rate)'):
+                            ylabel: str = 'Success Rate \n (1 - Error Rate)'):
     """
     Plot 100 - EER(OS,OS) (higher is better) split into the parts responsible for
     the architecture and SST, based on the model of sst_relative_effects():
@@ -924,51 +927,119 @@ def eer_os_os_decomposition(archs: Optional[List[str]] = None,
     plt.tight_layout()
 
 
-def accuracy_sst_range(archs: Optional[List[str]] = None,
-                       datasets: Optional[List[str]] = None,
-                       figsize: Tuple[int, int] = (14, 6),
-                       ylabel: Optional[str] = None,
-                       normalize: bool = False):
+def _sst_reductions(dataset: str, architectures: List[str]):
     """
-    Plot the accuracy 100 - EER(OS,OS) per architecture with the range of the part
-    achieved by leveraging SST:
+    Relative EER reduction achieved by leveraging SST (in %) with its run-to-run
+    standard deviation (error propagation assuming independent EER estimates):
 
-    SST (min) = EER(SS,SS) - EER(OS,OS)  (net SST benefit)
-    SST (max) = EER(OS,SS) - EER(OS,OS)  (includes the distribution shift)
+    Lower bound = 1 - EER(OS,OS) / EER(SS,SS)  (net SST benefit)
+    Upper bound = 1 - EER(OS,OS) / EER(OS,SS)  (includes the distribution shift)
 
-    The label above each bar gives both as a share of the accuracy. With
-    normalize=True, each bar is scaled to 100% of its accuracy.
+    Returns (lower, lower_std, upper, upper_std) as arrays over architectures.
+    """
+    indexed = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])
+    m = lambda train, test: np.array([indexed['eer_mean'][(dataset, arch, train, test)] for arch in architectures])
+    s = lambda train, test: np.array([indexed['eer_std'][(dataset, arch, train, test)] for arch in architectures])
+
+    def reduction(a, b):
+        ratio = m(*a) / m(*b)
+        return (1 - ratio) * 100, ratio * np.sqrt((s(*a) / m(*a)) ** 2 + (s(*b) / m(*b)) ** 2) * 100
+
+    lower, lower_std = reduction(('OS', 'OS'), ('SS', 'SS'))
+    upper, upper_std = reduction(('OS', 'OS'), ('OS', 'SS'))
+    return lower, lower_std, upper, upper_std
+
+
+def sst_range(archs: Optional[List[str]] = None,
+              datasets: Optional[List[str]] = None,
+              figsize: Optional[Tuple[int, int]] = None,
+              ylabel: Optional[str] = None,
+              normalize: bool = False):
+    """
+    Plot one bar of 100% per architecture, one panel per dataset, stacking:
+
+    Accuracy without SST     0 to 1 - EER(OS,SS)                  (light green)
+    SST part (upper bound)   1 - EER(OS,SS) to 1 - EER(SS,SS)     (lighter orange)
+    SST part (lower bound)   1 - EER(SS,SS) to 1 - EER(OS,OS)     (light orange)
+    Remaining error          1 - EER(OS,OS) to 100, i.e. EER(OS,OS) (red)
+
+    The orange and red parts together are the EER without SST. The label above each bar gives
+    the accuracy 1 - EER(OS,OS).
+
+    With normalize=True, each bar is 100% of the EER without SST and shows the two
+    estimates as stacked segments instead.
 
     Parameters:
     -----------
     archs : List[str]
         Architectures to include. Default: ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
     datasets : List[str]
-        Datasets to include, one subplot each. Default: all datasets
+        Datasets to include. Default: all datasets
     figsize : Tuple[int, int]
-        Figure size. Default: (14, 6)
+        Figure size. Default: (16, 6), or (14, 6) if normalize
     ylabel : str
-        Y-axis label. Default: 'Accuracy \\n (1 - Error Rate)', or
-        'Attribution of accuracy (%)' if normalize
+        Y-axis label. Default: 'Accuracy / EER (%)', or 'SST attribution (%)' if normalize
     normalize : bool
-        Whether to scale each bar to 100% of its accuracy. Default: False
+        Whether to show the relative EER reductions as 100% bars instead. Default: False
     """
     if archs is None:
         archs = DEFAULT_ARCHS
     if datasets is None:
         datasets = sorted(df_repro['dataset'].unique())
     if ylabel is None:
-        ylabel = 'SST attribution (%)' if normalize else 'Accuracy \n (1 - Error Rate)'
+        ylabel = 'SST attribution (%)' if normalize else 'Success Rate \n (1 - Error Rate)'
+
+    if normalize:
+        fig, axes = plt.subplots(1, len(datasets), figsize=figsize or (14, 6), sharey=True)
+
+        # Handle single dataset case
+        if len(datasets) == 1:
+            axes = [axes]
+
+        bar_width = 0.6
+
+        for i, dataset in enumerate(datasets):
+            ax = axes[i]
+
+            dataset_architectures = [arch for arch in archs if
+                                     arch in df_repro[df_repro['dataset'] == dataset]['architecture'].unique()]
+            x = np.arange(len(dataset_architectures))
+            lower, _, upper, _ = _sst_reductions(dataset, dataset_architectures)
+
+            # Remaining EER, the range in which the SST part may start (light), and
+            # the minimal SST part on top
+            ax.bar(x, 100 - upper, bar_width,
+                   color='whitesmoke', edgecolor='none')
+            ax.bar(x, upper - lower, bar_width, bottom=100 - upper,
+                   color=DEFAULT_COLORMAP['OS'], **BAR_STYLE_SHADOW)
+            ax.bar(x, lower, bar_width, bottom=100 - lower,
+                   color=DEFAULT_COLORMAP['OS'], edgecolor='none', alpha=0.8)
+
+            for xi, lo, hi in zip(x, lower, upper):
+                ax.text(xi, 101, f'{lo:.1f}%–{hi:.1f}%',
+                        ha='center', va='bottom', fontsize=9)
+
+            _style_axis(ax,
+                       title=f'dataset = {dataset}',
+                       ylabel=ylabel if i == 0 else None,
+                       xticks=x,
+                       xticklabels=dataset_architectures)
+            ax.set_ylim(0, 110)  # Headroom for the labels
+            ax.set_yticks(range(0, 101, 20))
+
+        plt.tight_layout()
+        return
 
     mean = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])['eer_mean']
 
-    fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+    fig, axes = plt.subplots(1, len(datasets), figsize=figsize or (16, 6), sharey=True)
 
     # Handle single dataset case
     if len(datasets) == 1:
         axes = [axes]
 
-    bar_width = 0.6
+    bar_width = 0.7
+    arrow_offset = -0.15  # Arrows (and their labels) left of the bar center
 
     for i, dataset in enumerate(datasets):
         ax = axes[i]
@@ -978,35 +1049,62 @@ def accuracy_sst_range(archs: Optional[List[str]] = None,
         x = np.arange(len(dataset_architectures))
 
         eer = lambda train, test: np.array([mean[(dataset, arch, train, test)] for arch in dataset_architectures])
+        accuracy_without_sst = 100 - eer('OS', 'SS')
         accuracy = 100 - eer('OS', 'OS')
+
+        # SST part in accuracy percentage points, from the net benefit to the upper bound
         sst_min = eer('SS', 'SS') - eer('OS', 'OS')
-        sst_max = eer('OS', 'SS') - eer('OS', 'OS')
+        sst_max = accuracy - accuracy_without_sst
 
-        if normalize:
-            scale = 100 / accuracy
-            accuracy, sst_min, sst_max = accuracy * scale, sst_min * scale, sst_max * scale
+        ax.bar(x, accuracy_without_sst, bar_width,
+               color='lightgray', alpha=0.4, edgecolor='none',
+               label='Accuracy without SST: 1 - EER(OS,SS)')
+        # Light green bar and range from the accuracy without SST up to the accuracy
+        ax.bar(x, accuracy - accuracy_without_sst, bar_width, bottom=accuracy_without_sst,
+               color=DEFAULT_GREEN, alpha=0.3, edgecolor='none')
+        for xi, bottom, top, lo, hi in zip(x, accuracy_without_sst, accuracy, sst_min, sst_max):
+            ax.annotate('', xy=(xi + arrow_offset, top), xytext=(xi + arrow_offset, bottom),
+                        arrowprops=dict(arrowstyle='->', color=DEFAULT_GREEN, lw=1,
+                                        linestyle='--', shrinkA=0, shrinkB=0))
+            ax.text(xi + arrow_offset + 0.04, (bottom + top) / 2, f'{hi:.1f}pp',
+                    color=DEFAULT_GREEN, ha='left', va='center', fontsize=11)
 
-        # Model part, the range in which the SST part may start (light), and the
-        # minimal SST part; one outline around the whole bar
-        ax.bar(x, accuracy - sst_max, bar_width,
-               color='whitesmoke', edgecolor='none')
-        ax.bar(x, sst_max - sst_min, bar_width, bottom=accuracy - sst_max,
-               color=DEFAULT_COLORMAP['OS'], **BAR_STYLE_SHADOW)
-        ax.bar(x, sst_min, bar_width, bottom=accuracy - sst_min,
-               color=DEFAULT_COLORMAP['OS'], edgecolor='none')
-        ax.bar(x, accuracy, bar_width, fill=False, edgecolor='none')
+        # Remaining error EER(OS,OS), filling up to 100%
+        ax.bar(x, 100 - accuracy, bar_width, bottom=accuracy,
+               color='red', alpha=0.1, edgecolor='none')
+        for xi, acc in zip(x, accuracy):
+            ax.annotate('', xy=(xi + arrow_offset, 100), xytext=(xi + arrow_offset, acc),
+                        arrowprops=dict(arrowstyle='->', color='red', lw=1,
+                                        linestyle='--', shrinkA=0, shrinkB=0))
+            ax.text(xi + arrow_offset + 0.04, (acc + 100) / 2, f'{100 - round(acc, 1):.1f}pp',
+                    color='red', ha='left', va='center', fontsize=11)
 
-        for xi, acc, lo, hi in zip(x, accuracy, sst_min, sst_max):
-            ax.text(xi, acc + 1, f'{lo / acc:.1%}–{hi / acc:.1%}',
-                    ha='center', va='bottom', fontsize=9)
+        # Boundary between the non-SST features and the SST exploitation
+        ax.hlines(accuracy_without_sst, x - bar_width / 2, x + bar_width / 2, color='gray', linewidth=0.5, zorder=3)
+
+        # Model performance: line across the bar and label left of it
+        ax.hlines(accuracy, x - bar_width / 2, x + bar_width / 2, color='black', linewidth=1.5, zorder=3)
+        for xi, acc in zip(x, accuracy):
+            ax.text(xi - bar_width / 2 - 0.03, acc, f'{acc:.1f}%',
+                    ha='right', va='center', fontsize=12, rotation=90, fontweight='bold')
 
         _style_axis(ax,
                    title=f'dataset = {dataset}',
                    ylabel=ylabel if i == 0 else None,
                    xticks=x,
                    xticklabels=dataset_architectures)
-        ax.set_ylim(0, 110)  # Headroom so the legend doesn't cover the labels
+        ax.set_ylim(0, 108)  # Headroom for the labels
         ax.set_yticks(range(0, 101, 20))
+        ax.set_xlim(x[0] - 0.75, x[-1] + 0.5)  # Room for the label left of the first bar
 
-    plt.tight_layout()
-
+    # One legend for all panels, below the plot
+    for ax in axes:
+        ax.get_legend().remove()
+    arrow = lambda symbol, color: Line2D([], [], marker=symbol, color=color, linestyle='none', markersize=10)
+    fig.legend(handles=[Patch(color=DEFAULT_GREEN, alpha=0.3),
+                        Patch(color='red', alpha=0.3),
+                        Patch(color='lightgray', alpha=0.4)],
+               labels=['SST Feature Range', 'Error Range', 'Exploitation of Non-SST Features'],
+               handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
+               loc='lower center', ncol=3, fontsize=11, frameon=False)
+    plt.tight_layout(rect=(0, 0.06, 1, 1))
