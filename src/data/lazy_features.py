@@ -60,4 +60,6 @@ def expected_frame_count(raw_sample_count, transformation):
     produce, matching src/data/features.py::_stft_magnitude's
     waveform.unfold(-1, frame_length, frame_step) framing -- computed from
     just the sample count, without decoding or transforming any audio."""
-    return max(0, (raw_sample_count - transformation.frame_length) // transformation.frame_step + 1)
+    frames = max(0, (raw_sample_count - transformation.frame_length) // transformation.frame_step + 1)
+    # w2v-BERT 2.0 stacks every 2 frames, padding an odd last one.
+    return -(-frames // 2) if transformation.type == "w2vbert" else frames

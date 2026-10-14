@@ -13,11 +13,19 @@ class TransformationConfig:
     fmax: float = 8000.0
     # "mel" (default, matches CNN/RNN's DeepVoice front-end) or "linear" (raw
     # magnitude spectrogram, no mel filterbank -- matches ResNet's front-end,
-    # context/src/00_configs/01_transformation/ResNet.json's "SPECTROGRAM" type).
+    # context/src/00_configs/01_transformation/ResNet.json's "SPECTROGRAM" type),
+    # or "w2vbert" (w2v-BERT 2.0's own front-end, see src/models/w2vbert.py:
+    # Kaldi 80-bin log-fbank, 25 ms / 10 ms, per-bin utterance normalization,
+    # every 2 frames stacked into one 160-dim frame -- so one frame per 20 ms;
+    # needs frame_length_s 0.025, frame_step_s 0.01, sample_rate 16000).
     type: str = "mel"
     # "hann" (default) or "hamming" -- ResNet's front-end uses hamming
     # (context/src/setup/utils.py's window_map).
     window: str = "hann"
+
+    def __post_init__(self):
+        if self.type == "w2vbert" and (self.sample_rate, self.frame_length, self.frame_step) != (16000, 400, 160):
+            raise ValueError("type 'w2vbert' needs sample_rate 16000, frame_length_s 0.025, frame_step_s 0.01")
 
     @property
     def frame_length(self):
@@ -29,10 +37,13 @@ class TransformationConfig:
 
     @property
     def steps_per_second(self):
-        return int((self.sample_rate + self.frame_step - self.frame_length) / self.frame_step)
+        steps = int((self.sample_rate + self.frame_step - self.frame_length) / self.frame_step)
+        return -(-steps // 2) if self.type == "w2vbert" else steps
 
     @property
     def num_freqs(self):
+        if self.type == "w2vbert":
+            return 160
         return self.n_mels if self.type == "mel" else self.nfft // 2 + 1
 
 
@@ -167,6 +178,15 @@ class FResNetConfig:
 
 
 @dataclass
+class W2VBertConfig:
+    """Frozen pretrained w2v-BERT 2.0 encoder (src/models/w2vbert.py), probed
+    with the OS/SS/SU test: its input frames are what segment draws shuffle."""
+
+    # Hugging Face model id (or local path) of the pretrained checkpoint.
+    pretrained: str = "facebook/w2v-bert-2.0"
+
+
+@dataclass
 class LossConfig:
     type: str = "ANGULAR_MARGIN"
     margin_cosface: float = 0.3
@@ -294,6 +314,7 @@ class ExperimentConfig:
     rnn: RNNConfig = field(default_factory=RNNConfig)
     resnet: ResNetConfig = field(default_factory=ResNetConfig)
     fresnet: FResNetConfig = field(default_factory=FResNetConfig)
+    w2vbert: W2VBertConfig = field(default_factory=W2VBertConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -325,6 +346,7 @@ class ExperimentConfig:
             ("rnn", RNNConfig),
             ("resnet", ResNetConfig),
             ("fresnet", FResNetConfig),
+            ("w2vbert", W2VBertConfig),
             ("loss", LossConfig),
             ("optimizer", OptimizerConfig),
             ("training", TrainingConfig),

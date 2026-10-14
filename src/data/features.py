@@ -1,3 +1,5 @@
+import functools
+
 import numpy as np
 import torch
 import torchaudio
@@ -47,6 +49,24 @@ def compute_linear_spectrogram(waveform, config):
     return _stft_magnitude(waveform, config).numpy()
 
 
+@functools.cache
+def _w2vbert_feature_extractor():
+    # Imported lazily: transformers is only needed for this front-end.
+    # padding_value=1 matches facebook/w2v-bert-2.0's preprocessor_config.json
+    # (it fills the odd last frame's stacked half), so no Hub access is needed.
+    from transformers import SeamlessM4TFeatureExtractor
+
+    return SeamlessM4TFeatureExtractor(padding_value=1.0)
+
+
+def compute_w2vbert_features(waveform, config):
+    """w2v-BERT 2.0's input features, (frames, 160): see
+    TransformationConfig.type. Already normalized (per mel bin, over the
+    utterance), so featurize_waveform applies no DRC/standardization."""
+    output = _w2vbert_feature_extractor()(waveform, sampling_rate=config.sample_rate, return_tensors="np")
+    return output["input_features"][0]
+
+
 def apply_drc(spectrogram):
     """Dynamic range compression, matches TRANSFORM['DYNAMIC_RANGE_COMPRESSION']
     in context/src/generator/preprocessing.py."""
@@ -72,6 +92,8 @@ def _bin_center_frequencies(config):
     or the STFT bin frequencies for a linear spectrogram."""
     if config.type == "linear":
         return np.arange(config.nfft // 2 + 1) * config.sample_rate / config.nfft
+    if config.type != "mel":
+        raise ValueError(f"VTLP is not supported for transformation type {config.type!r}")
     mel_min, mel_max = (2595.0 * np.log10(1.0 + f / 700.0) for f in (config.fmin, config.fmax))
     mel_points = np.linspace(mel_min, mel_max, config.n_mels + 2)[1:-1]
     return 700.0 * (10.0 ** (mel_points / 2595.0) - 1.0)

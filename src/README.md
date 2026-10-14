@@ -37,6 +37,12 @@ Five speaker-embedding backends are available via `model.type`:
   time. See `src/models/conformer.py`'s module docstring for architecture
   details and configs/conformer_timit.yaml for its hyperparameters
   (`conformer:` section).
+- `"W2VBert"`: the frozen, pretrained w2v-BERT 2.0 encoder
+  (`facebook/w2v-bert-2.0`, via Hugging Face `transformers`) with a trained
+  layer-weighting + mean/std-pooling head, to measure how much SST a large
+  self-supervised model exploits. Needs its own front-end
+  (`transformation.type: "w2vbert"`), whose 20 ms frames are what OS/SS/SU
+  shuffle. See `src/models/w2vbert.py` and `configs/w2vbert-timit.yaml`.
 
 All five expose the same `(backend, bottleneck)` output contract (see
 "Adding a new model backend" below), so switching `model.type` swaps only
@@ -242,6 +248,7 @@ python -m src.experiment --config configs/rnn-timit.yaml         # RNN backend o
 python -m src.experiment --config configs/resnet-timit.yaml      # ResNet backend on TIMIT
 python -m src.experiment --config configs/fresnet-timit.yaml      # F-ResNet backend on TIMIT
 python -m src.experiment --config configs/conformer-timit.yaml   # Conformer backend on TIMIT
+python -m src.experiment --config configs/w2vbert-timit.yaml     # frozen w2v-BERT 2.0 on TIMIT
 python -m src.experiment --config configs/cnn-voxceleb.yaml      # CNN backend on VoxCeleb
 python -m src.experiment --config configs/rnn-voxceleb.yaml      # RNN backend on VoxCeleb
 python -m src.experiment --config configs/resnet-voxceleb.yaml   # ResNet backend on VoxCeleb

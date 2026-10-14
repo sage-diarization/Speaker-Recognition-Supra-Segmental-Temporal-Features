@@ -185,7 +185,8 @@ def _lazy_featurize_split(corpus, split, transformation, playback_speed=1.0):
     A corpus with load_samples(path, start, stop) (VoxCelebCorpus) also gets
     each entry a frames_fn, so training segment draws read only the drawn
     frames' samples instead of the whole file (see featurize_frame_range) --
-    unless playback_speed != 1, which needs the whole waveform to resample."""
+    unless playback_speed != 1, which needs the whole waveform to resample,
+    or the transformation isn't frame-local (w2vbert)."""
     speakers = corpus.speakers(split)
     label_map = {speaker: i for i, speaker in enumerate(speakers)}
     load_samples = getattr(corpus, "load_samples", None)
@@ -195,7 +196,8 @@ def _lazy_featurize_split(corpus, split, transformation, playback_speed=1.0):
             length = expected_frame_count(playback_sample_count(corpus.raw_sample_count(path), playback_speed), transformation)
             compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation, playback_speed)
             frames_fn = None
-            if load_samples is not None and playback_speed == 1:
+            # w2vbert features are normalized per utterance, so not frame-local.
+            if load_samples is not None and playback_speed == 1 and transformation.type != "w2vbert":
                 frames_fn = functools.partial(featurize_frame_range, load_samples, path, transformation_config=transformation)
             utterances.append((LazyFeatures(compute_fn, length, frames_fn), label_map[speaker]))
     return utterances, label_map

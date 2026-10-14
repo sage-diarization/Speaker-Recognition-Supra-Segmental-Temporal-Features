@@ -8,4 +8,5 @@ praatio
 matplotlib
 pyyaml
 wandb
+transformers
 pytest

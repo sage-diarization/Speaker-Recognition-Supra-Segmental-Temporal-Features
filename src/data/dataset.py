@@ -5,7 +5,13 @@ import torch
 from scipy.signal import resample_poly
 from torch.utils.data import Dataset
 
-from .features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
+from .features import (
+    apply_drc,
+    compute_linear_spectrogram,
+    compute_mel_spectrogram,
+    compute_w2vbert_features,
+    normalise_standardize,
+)
 from .lazy_features import resolve_features, utterance_length
 from .segments import DRAW_STRATEGIES
 
@@ -33,6 +39,8 @@ def playback_sample_count(raw_sample_count, playback_speed):
 
 
 def featurize_waveform(waveform, transformation_config):
+    if transformation_config.type == "w2vbert":
+        return compute_w2vbert_features(waveform, transformation_config)
     if transformation_config.type == "linear":
         spectrogram = compute_linear_spectrogram(waveform, transformation_config)
     else:
