@@ -1,10 +1,35 @@
+from fractions import Fraction
+
 import numpy as np
 import torch
+from scipy.signal import resample_poly
 from torch.utils.data import Dataset
 
 from .features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
 from .lazy_features import resolve_features, utterance_length
 from .segments import DRAW_STRATEGIES
+
+
+def _playback_ratio(playback_speed):
+    return Fraction(playback_speed).limit_denominator(1000)
+
+
+def change_playback_speed(waveform, playback_speed):
+    """waveform as if played back playback_speed times faster (tempo and
+    pitch both scale, like a sped-up tape or sox's `speed` effect): resampled
+    to playback_sample_count(len(waveform), playback_speed) samples, then
+    read at the unchanged sample rate."""
+    if playback_speed == 1:
+        return waveform
+    ratio = _playback_ratio(playback_speed)
+    return resample_poly(waveform, ratio.denominator, ratio.numerator).astype(np.float32)
+
+
+def playback_sample_count(raw_sample_count, playback_speed):
+    """len(change_playback_speed(waveform, playback_speed)) for a
+    raw_sample_count-sample waveform, without resampling it."""
+    ratio = _playback_ratio(playback_speed)
+    return -(-raw_sample_count * ratio.denominator // ratio.numerator)
 
 
 def featurize_waveform(waveform, transformation_config):

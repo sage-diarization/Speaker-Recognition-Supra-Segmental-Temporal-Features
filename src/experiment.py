@@ -11,7 +11,13 @@ import numpy as np
 
 from . import tracking
 from .config import ExperimentConfig
-from .data.dataset import SegmentDataset, featurize_frame_range, featurize_waveform
+from .data.dataset import (
+    SegmentDataset,
+    change_playback_speed,
+    featurize_frame_range,
+    featurize_waveform,
+    playback_sample_count,
+)
 from .data.lazy_features import LazyFeatures, expected_frame_count
 from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
@@ -45,19 +51,19 @@ def _run_statistics(values):
     return RunStatistics(mean=statistics.fmean(values), std=statistics.pstdev(values))
 
 
-def _featurize_split(corpus, split, transformation):
+def _featurize_split(corpus, split, transformation, playback_speed=1.0):
     speakers = corpus.speakers(split)
     label_map = {speaker: i for i, speaker in enumerate(speakers)}
     utterances = []
     for speaker in speakers:
         for path in corpus.utterance_paths(split, speaker):
             waveform, _ = corpus.load_waveform(path)
-            features = featurize_waveform(waveform, transformation)
+            features = featurize_waveform(change_playback_speed(waveform, playback_speed), transformation)
             utterances.append((features, label_map[speaker]))
     return utterances, label_map
 
 
-def _lazy_featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
+def _lazy_featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker, playback_speed=1.0):
     """Lazy analogue of _featurize_train_dev_split (see its docstring) for a
     corpus too large to eagerly featurize upfront -- currently VoxCeleb's
     TRAIN split, whose per-speaker segments run far more numerous than TIMIT's ~10 sentences/speaker."""
@@ -67,14 +73,16 @@ def _lazy_featurize_train_dev_split(corpus, transformation, dev_holdout_per_spea
     for speaker in speakers:
         paths = sorted(corpus.utterance_paths("TRAIN", speaker))
         for i, path in enumerate(paths):
-            length = expected_frame_count(corpus.raw_sample_count(path), transformation)
-            compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation)
-            target = dev_utterances if i < dev_holdout_per_speaker else train_utterances
+            is_dev = i < dev_holdout_per_speaker
+            speed = 1.0 if is_dev else playback_speed
+            length = expected_frame_count(playback_sample_count(corpus.raw_sample_count(path), speed), transformation)
+            compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation, speed)
+            target = dev_utterances if is_dev else train_utterances
             target.append((LazyFeatures(compute_fn, length), label_map[speaker]))
     return train_utterances, dev_utterances, label_map
 
 
-def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
+def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker, playback_speed=1.0):
     """Splits TRAIN into an actual-training pool and a held-out dev pool
     (dev_holdout_per_speaker of each speaker's utterances, deterministically
     the first sorted paths), so periodic checkpoint selection during training
@@ -91,8 +99,11 @@ def _featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker):
         paths = sorted(corpus.utterance_paths("TRAIN", speaker))
         for i, path in enumerate(paths):
             waveform, _ = corpus.load_waveform(path)
+            is_dev = i < dev_holdout_per_speaker
+            if not is_dev:
+                waveform = change_playback_speed(waveform, playback_speed)
             features = featurize_waveform(waveform, transformation)
-            target = dev_utterances if i < dev_holdout_per_speaker else train_utterances
+            target = dev_utterances if is_dev else train_utterances
             target.append((features, label_map[speaker]))
     return train_utterances, dev_utterances, label_map
 
@@ -151,12 +162,12 @@ def build_sc_utterances(corpus, split, transformation, num_speakers, speaker_ids
     return utterances
 
 
-def _load_and_featurize(load_waveform_fn, path, transformation):
+def _load_and_featurize(load_waveform_fn, path, transformation, playback_speed=1.0):
     waveform, _ = load_waveform_fn(path)
-    return featurize_waveform(waveform, transformation)
+    return featurize_waveform(change_playback_speed(waveform, playback_speed), transformation)
 
 
-def _lazy_featurize_split(corpus, split, transformation):
+def _lazy_featurize_split(corpus, split, transformation, playback_speed=1.0):
     """Like _featurize_split, but each utterance is a LazyFeatures instance
     (featurized on first access, not upfront) -- see src/data/voxceleb.py's
     module docstring for why VoxCeleb's ~148k training utterances can't be
@@ -168,17 +179,18 @@ def _lazy_featurize_split(corpus, split, transformation):
 
     A corpus with load_samples(path, start, stop) (VoxCelebCorpus) also gets
     each entry a frames_fn, so training segment draws read only the drawn
-    frames' samples instead of the whole file (see featurize_frame_range)."""
+    frames' samples instead of the whole file (see featurize_frame_range) --
+    unless playback_speed != 1, which needs the whole waveform to resample."""
     speakers = corpus.speakers(split)
     label_map = {speaker: i for i, speaker in enumerate(speakers)}
     load_samples = getattr(corpus, "load_samples", None)
     utterances = []
     for speaker in speakers:
         for path in corpus.utterance_paths(split, speaker):
-            length = expected_frame_count(corpus.raw_sample_count(path), transformation)
-            compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation)
+            length = expected_frame_count(playback_sample_count(corpus.raw_sample_count(path), playback_speed), transformation)
+            compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation, playback_speed)
             frames_fn = None
-            if load_samples is not None:
+            if load_samples is not None and playback_speed == 1:
                 frames_fn = functools.partial(featurize_frame_range, load_samples, path, transformation_config=transformation)
             utterances.append((LazyFeatures(compute_fn, length, frames_fn), label_map[speaker]))
     return utterances, label_map
@@ -338,7 +350,7 @@ def run_experiment(config, corpus=None, strategies=None):
         # 04_evaluation/VOX-00_ORIGINAL.json), the same list otherwise (see
         # src/data/voxceleb.py).
         corpus = corpus or VoxCelebCorpus(config)
-        train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation)
+        train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation, config.training.playback_speed)
         sv_eval_utterances = _lazy_trial_utterances(corpus, corpus.trial_pairs, transformation)
         if corpus.dev_trial_pairs is corpus.trial_pairs:
             dev_utterances = sv_eval_utterances
@@ -370,7 +382,7 @@ def run_experiment(config, corpus=None, strategies=None):
         # -- the dataset's terms permit only verification use.
         corpus = corpus or TidyVoiceXCorpus(config)
         train_utterances, dev_pool, train_label_map = _lazy_featurize_train_dev_split(
-            corpus, transformation, config.evaluation.dev_holdout_per_speaker
+            corpus, transformation, config.evaluation.dev_holdout_per_speaker, config.training.playback_speed
         )
         dev_utterances, dev_trials = _holdout_dev_trials(dev_pool, segment_length)
         sv_eval_utterances, eval_trials = _lazy_indexed_trial_utterances(corpus, transformation, segment_length)
@@ -389,11 +401,11 @@ def run_experiment(config, corpus=None, strategies=None):
             # Speaker-disjoint dev set from TEST (the standard TIMIT
             # development speakers, see the TIMIT configs), matching
             # context/src's "development" SV list; TRAIN is trained on in full.
-            train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation)
+            train_utterances, train_label_map = _featurize_split(corpus, "TRAIN", transformation, config.training.playback_speed)
             dev_utterances = _featurize_dev_speakers(corpus, "TEST", transformation, config.evaluation.dev_speakers)
         else:
             train_utterances, dev_utterances, train_label_map = _featurize_train_dev_split(
-                corpus, transformation, config.evaluation.dev_holdout_per_speaker
+                corpus, transformation, config.evaluation.dev_holdout_per_speaker, config.training.playback_speed
             )
         sv_eval_utterances, _ = _featurize_split(corpus, "TEST", transformation)
         sc_utterances = build_sc_utterances(
@@ -456,7 +468,8 @@ def run_experiment(config, corpus=None, strategies=None):
             if run_idx in manifest["completed"]:
                 continue
 
-            dataset = SegmentDataset(train_utterances, segment_length, train_strategy)
+            train_segment_length = config.data.train_segment_length(transformation, config.training.playback_speed)
+            dataset = SegmentDataset(train_utterances, train_segment_length, train_strategy)
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
             checkpoint_path = _checkpoint_path(config, train_strategy, run_idx)

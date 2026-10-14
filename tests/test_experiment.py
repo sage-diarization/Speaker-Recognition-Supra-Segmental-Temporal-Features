@@ -194,6 +194,31 @@ def test_featurize_train_dev_split_holds_out_configured_utterances_per_speaker()
     assert {label for _, label in train_utterances} == set(label_map.values())
 
 
+def test_playback_speed_transforms_only_the_training_pool():
+    # TrainingConfig.playback_speed is training-data augmentation: held-out
+    # dev utterances must stay at the original speed, in both the eager and
+    # the lazy split, and lazy lengths must match the transformed features.
+    waveforms = {"TRAIN": {"SPK0": [make_synthetic_waveform(200, 1.0, 16000, seed=i) for i in range(3)]}}
+    corpus = _StubCorpus(waveforms)
+    corpus.raw_sample_count = lambda path: len(corpus.load_waveform(path)[0])
+    transformation = ExperimentConfig().transformation
+    original = experiment_module._featurize_train_dev_split(corpus, transformation, dev_holdout_per_speaker=1)
+
+    eager_train, eager_dev, _ = experiment_module._featurize_train_dev_split(
+        corpus, transformation, dev_holdout_per_speaker=1, playback_speed=1.25
+    )
+    lazy_train, lazy_dev, _ = experiment_module._lazy_featurize_train_dev_split(
+        corpus, transformation, dev_holdout_per_speaker=1, playback_speed=1.25
+    )
+
+    np.testing.assert_array_equal(eager_dev[0][0], original[1][0][0])
+    np.testing.assert_array_equal(lazy_dev[0][0](), original[1][0][0])
+    for (eager, _), (lazy, _), (unchanged, _) in zip(eager_train, lazy_train, original[0]):
+        assert eager.shape[0] == lazy.length == lazy().shape[0]
+        # Samples scale exactly by 1 / 1.25; frames only up to the frame_length offset.
+        assert eager.shape[0] == pytest.approx(unchanged.shape[0] / 1.25, abs=2)
+
+
 def test_run_experiment_dev_checkpoint_selection_excludes_test_split(monkeypatch):
     # Regression test for the dev/test leakage fix: before it, dev_utterances
     # passed to train() *was* sv_eval_utterances (the TEST split), so its size
@@ -818,3 +843,10 @@ def test_run_experiment_tidyvoicex_end_to_end_skips_sc_and_uses_trial_list_eval(
     assert names == ["CNN-tidyvoicex-OS", "CNN-tidyvoicex-SS", "CNN-tidyvoicex-SU"]
     for _, tags in captured:
         assert "tidyvoicex" in tags
+
+
+@pytest.mark.parametrize("playback_speed, expected", [(1.0, 94), (1.2, 75), (0.8, 113)])
+def test_train_segment_length_follows_playback_speed(playback_speed, expected):
+    config = ExperimentConfig()
+    assert config.data.segment_length(config.transformation) == 94
+    assert config.data.train_segment_length(config.transformation, playback_speed) == expected

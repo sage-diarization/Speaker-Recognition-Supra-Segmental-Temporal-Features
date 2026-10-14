@@ -21,7 +21,7 @@ import numpy as np
 import soundfile as sf
 
 from .config import ExperimentConfig, TransformationConfig
-from .data.dataset import SegmentDataset
+from .data.dataset import SegmentDataset, change_playback_speed
 from .data.features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
 from .data.segments import DRAW_STRATEGIES
 
@@ -41,16 +41,18 @@ def _imshow(ax, features, transformation, color_scale):
 
 
 def plot_items(wav_path, output_path, segment_length, seed=None, transformation=None, only_strategies=None,
-               normalise=True, full_only=False):
+               normalise=True, full_only=False, playback_speed=1.0):
     """Draws one item per strategy from a SegmentDataset holding only the
     utterance at wav_path and writes the comparison figure to output_path.
     If only_strategies is given, plots just those strategies' items, without
     the full utterance and source-frame panels. If full_only is True, plots
     just the full utterance (no items are drawn). If normalise is False, the
     features are featurized like featurize_waveform minus its per-frame
-    standardization."""
+    standardization. playback_speed transforms the waveform first, as
+    TrainingConfig.playback_speed does for training utterances."""
     transformation = transformation or TransformationConfig()
     waveform, _ = sf.read(str(wav_path), dtype="float32")
+    waveform = change_playback_speed(waveform, playback_speed)
     if transformation.type == "linear":
         full = apply_drc(compute_linear_spectrogram(waveform, transformation))
     else:

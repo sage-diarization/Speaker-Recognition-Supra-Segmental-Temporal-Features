@@ -1,5 +1,7 @@
 import numpy as np
+import pytest
 
+from src.data.dataset import change_playback_speed, playback_sample_count
 from src.data.features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
 from src.config import TransformationConfig
 
@@ -69,3 +71,22 @@ def test_hamming_window_produces_different_spectrogram_than_hann():
     hann_spec = compute_mel_spectrogram(waveform, hann_config)
     hamming_spec = compute_mel_spectrogram(waveform, hamming_config)
     assert not np.allclose(hann_spec, hamming_spec)
+
+
+@pytest.mark.parametrize("playback_speed", [0.8, 1.2, 2.0])
+def test_change_playback_speed_scales_duration_and_pitch(playback_speed):
+    sample_rate = 16000
+    t = np.arange(sample_rate) / sample_rate
+    waveform = np.sin(2 * np.pi * 440 * t).astype(np.float32)
+
+    sped = change_playback_speed(waveform, playback_speed)
+
+    assert len(sped) == playback_sample_count(len(waveform), playback_speed)
+    assert len(sped) == pytest.approx(len(waveform) / playback_speed, abs=1)
+    peak_hz = np.argmax(np.abs(np.fft.rfft(sped))) * sample_rate / len(sped)
+    assert peak_hz == pytest.approx(440 * playback_speed, abs=2)
+
+
+def test_change_playback_speed_one_is_identity():
+    waveform = np.random.default_rng(0).standard_normal(1000).astype(np.float32)
+    assert change_playback_speed(waveform, 1.0) is waveform

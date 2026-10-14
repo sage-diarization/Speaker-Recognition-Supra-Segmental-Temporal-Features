@@ -52,6 +52,11 @@ class DataConfig:
     def segment_length(self, transformation: TransformationConfig):
         return int(self.segment_duration * transformation.steps_per_second)
 
+    def train_segment_length(self, transformation: TransformationConfig, playback_speed: float):
+        """segment_length adjusted for TrainingConfig.playback_speed."""
+        segment_length = self.segment_length(transformation)
+        return round(segment_length + segment_length * (1 - playback_speed))
+
 
 @dataclass
 class VoxCelebConfig:
@@ -186,6 +191,14 @@ class TrainingConfig:
     num_epochs: int = 128
     batch_size: int = 100
     segment_draw: str = "OS"
+    # Playback-speed data augmentation: every training utterance's waveform
+    # is played back this many times faster (resampled, so tempo and pitch
+    # both scale -- see src/data/dataset.py's change_playback_speed) before
+    # featurization, and training segments are drawn
+    # segment_length + segment_length * (1 - playback_speed) frames long
+    # (see DataConfig.train_segment_length). 1.0 (the default) changes
+    # neither; dev/test utterances and segments are never changed.
+    playback_speed: float = 1.0
     num_speakers: int = 462
     # Directory persisted checkpoints and resume manifests are written under
     # (see src/training/trainer.py's checkpoint/resume support and
