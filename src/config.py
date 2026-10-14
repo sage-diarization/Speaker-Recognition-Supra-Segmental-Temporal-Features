@@ -199,6 +199,13 @@ class TrainingConfig:
     # (see DataConfig.train_segment_length). 1.0 (the default) changes
     # neither; dev/test utterances and segments are never changed.
     playback_speed: float = 1.0
+    # VTLP data augmentation (Jaitly & Hinton 2013): every drawn training
+    # segment's frequency axis is warped by an alpha drawn uniformly from
+    # [low, high] (e.g. [0.9, 1.1], the paper's range), moving formants as if
+    # the vocal tract were shorter/longer while leaving timing untouched --
+    # see src/data/features.py's warp_frequency_axis. Unset (null/None, the
+    # default) disables it; dev/test segments are never warped.
+    vtlp_alpha_range: list | None = None
     num_speakers: int = 462
     # Directory persisted checkpoints and resume manifests are written under
     # (see src/training/trainer.py's checkpoint/resume support and

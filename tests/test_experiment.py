@@ -1,3 +1,4 @@
+import functools
 import itertools
 import json
 import statistics
@@ -6,10 +7,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
+import torch
 
 from src import experiment as experiment_module
 from src.config import ExperimentConfig
-from src.data.dataset import featurize_waveform
+from src.data.dataset import SegmentDataset, featurize_waveform
+from src.data.features import normalise_standardize
 from src.data.tidyvoicex import TidyVoiceXCorpus
 from src.experiment import RunStatistics, STRATEGIES, build_sc_utterances, format_results, run_experiment
 from tests.conftest import make_synthetic_waveform
@@ -850,3 +853,30 @@ def test_train_segment_length_follows_playback_speed(playback_speed, expected):
     config = ExperimentConfig()
     assert config.data.segment_length(config.transformation) == 94
     assert config.data.train_segment_length(config.transformation, playback_speed) == expected
+
+
+def test_vtlp_augment_draws_fresh_alpha_per_segment_reproducibly():
+    transformation = ExperimentConfig().transformation
+    features = normalise_standardize(np.random.default_rng(0).random((300, transformation.n_mels)) * 30)
+    augment_fn = functools.partial(
+        experiment_module._vtlp_augment, alpha_range=[0.9, 1.1], transformation=transformation
+    )
+
+    def draws(augment_fn):
+        dataset = SegmentDataset([(features, 0)], 94, "OS", seed=0, augment_fn=augment_fn)
+        return [dataset[0][0] for _ in range(2)]
+
+    plain, warped, warped_again = draws(None), draws(augment_fn), draws(augment_fn)
+    for p, w, w2 in zip(plain, warped, warped_again):
+        assert w.shape == p.shape
+        assert not torch.equal(w, p)
+        assert torch.equal(w, w2)
+
+    alphas = []
+
+    def recording_augment(segment, rng):
+        alphas.append(rng.uniform(0.9, 1.1))
+        return segment
+
+    draws(recording_augment)
+    assert len(set(alphas)) == 2  # a fresh alpha for every drawn segment

@@ -2,7 +2,15 @@ import numpy as np
 import pytest
 
 from src.data.dataset import change_playback_speed, playback_sample_count
-from src.data.features import apply_drc, compute_linear_spectrogram, compute_mel_spectrogram, normalise_standardize
+from src.data.features import (
+    _bin_center_frequencies,
+    apply_drc,
+    compute_linear_spectrogram,
+    compute_mel_spectrogram,
+    normalise_standardize,
+    vtlp_warp,
+    warp_frequency_axis,
+)
 from src.config import TransformationConfig
 
 
@@ -90,3 +98,47 @@ def test_change_playback_speed_scales_duration_and_pitch(playback_speed):
 def test_change_playback_speed_one_is_identity():
     waveform = np.random.default_rng(0).standard_normal(1000).astype(np.float32)
     assert change_playback_speed(waveform, 1.0) is waveform
+
+
+def _peak_spectrogram(config, peak_hz, num_frames=5):
+    centers = _bin_center_frequencies(config)
+    spectrogram = np.zeros((num_frames, len(centers)), dtype=np.float32)
+    spectrogram[:, np.argmin(np.abs(centers - peak_hz))] = 1.0
+    return spectrogram, centers
+
+
+@pytest.mark.parametrize("kind", ["linear", "mel"])
+@pytest.mark.parametrize("alpha", [0.9, 1.1])
+def test_warp_frequency_axis_moves_peak_by_alpha_and_keeps_frames(kind, alpha):
+    config = TransformationConfig(type=kind)
+    spectrogram, centers = _peak_spectrogram(config, 1000.0)
+    source_hz = centers[spectrogram[0].argmax()]
+
+    warped = warp_frequency_axis(spectrogram, alpha, config)
+
+    assert warped.shape == spectrogram.shape
+    bin_width = np.diff(centers)[np.argmin(np.abs(centers - alpha * source_hz))]
+    assert centers[warped[0].argmax()] == pytest.approx(alpha * source_hz, abs=bin_width)
+
+
+def test_warp_frequency_axis_pins_zero_and_nyquist():
+    config = TransformationConfig(type="linear")
+    spectrogram = np.random.default_rng(0).random((3, config.nfft // 2 + 1)).astype(np.float32)
+    for alpha in (0.9, 1.1):
+        warped = warp_frequency_axis(spectrogram, alpha, config)
+        np.testing.assert_allclose(warped[:, [0, -1]], spectrogram[:, [0, -1]], rtol=1e-6)
+
+
+def test_vtlp_warp_equals_standardizing_the_warped_unstandardized_spectrogram():
+    config = TransformationConfig()
+    spectrogram = np.random.default_rng(0).random((4, config.n_mels)) * 30
+    np.testing.assert_allclose(
+        vtlp_warp(normalise_standardize(spectrogram), 1.1, config),
+        normalise_standardize(warp_frequency_axis(spectrogram, 1.1, config)),
+        atol=1e-4,
+    )
+
+
+def test_vtlp_alpha_one_is_identity():
+    features = np.random.default_rng(0).standard_normal((4, 128)).astype(np.float32)
+    assert vtlp_warp(features, 1.0, TransformationConfig()) is features

@@ -18,6 +18,7 @@ from .data.dataset import (
     featurize_waveform,
     playback_sample_count,
 )
+from .data.features import vtlp_warp
 from .data.lazy_features import LazyFeatures, expected_frame_count
 from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
@@ -160,6 +161,10 @@ def build_sc_utterances(corpus, split, transformation, num_speakers, speaker_ids
             features = featurize_waveform(waveform, transformation)
             utterances.append((features, label))
     return utterances
+
+
+def _vtlp_augment(segment, rng, alpha_range, transformation):
+    return vtlp_warp(segment, rng.uniform(*alpha_range), transformation)
 
 
 def _load_and_featurize(load_waveform_fn, path, transformation, playback_speed=1.0):
@@ -469,7 +474,12 @@ def run_experiment(config, corpus=None, strategies=None):
                 continue
 
             train_segment_length = config.data.train_segment_length(transformation, config.training.playback_speed)
-            dataset = SegmentDataset(train_utterances, train_segment_length, train_strategy)
+            augment_fn = None
+            if config.training.vtlp_alpha_range:
+                augment_fn = functools.partial(
+                    _vtlp_augment, alpha_range=config.training.vtlp_alpha_range, transformation=transformation
+                )
+            dataset = SegmentDataset(train_utterances, train_segment_length, train_strategy, augment_fn=augment_fn)
             model = build_model(config)
             loss_module = build_loss(config, bottleneck_dim=512, num_speakers=len(train_label_map))
             checkpoint_path = _checkpoint_path(config, train_strategy, run_idx)
