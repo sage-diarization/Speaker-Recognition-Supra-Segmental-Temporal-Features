@@ -47,11 +47,11 @@ Five speaker-embedding backends are available via `model.type`:
 All five expose the same `(backend, bottleneck)` output contract (see
 "Adding a new model backend" below), so switching `model.type` swaps only
 the embedding backbone -- everything else (loss, training loop, evaluation)
-stays identical, which is what makes the runs comparable. The one exception
-is ResNet's and F-ResNet's own front-end transformation (linear vs. mel spectrogram),
-which the original also varies per model for the same reason (Section 2.2:
-front-end/hyperparameters are kept faithful to each model's own source
-paper, not unified across models).
+stays identical, which is what makes the runs comparable. Unlike the
+original (Section 2.2, which keeps ResNet's linear spectrogram and
+F-ResNet's 40-mel front-end faithful to their source papers), ResNet and
+F-ResNet here share the CNN/RNN/Conformer mel front-end too, so their
+numbers differ only by architecture.
 
 Trains a speaker embedding model for each of the three training-time
 segment-draw strategies (OS/SS/SU), repeated `num_runs` times per strategy
