@@ -19,21 +19,14 @@ data:
 model:
   type: "FResNet"
 
-# F-ResNet's original front-end from clovaai/voxceleb_trainer:
-# Mel spectrogram with 40 mel bins, Hamming window, 512-point FFT
-transformation:
-  type: "mel"
-  window: "hamming"
-  nfft: 512
-  frame_length_s: 0.025
-  frame_step_s: 0.01
-  n_mels: 40
+# No transformation section: the default mel front-end shared with the
+# CNN/RNN/Conformer configs (not clovaai's original 40-mel, 25 ms one), so
+# its numbers are directly comparable to theirs.
 
 # F-ResNet hyperparameters
 fresnet:
   bottleneck: 512
   encoder_type: "SAP"  # Self-Attentive Pooling (or "ASP")
-  n_mels: 40
 
 # Loss function
 loss:
