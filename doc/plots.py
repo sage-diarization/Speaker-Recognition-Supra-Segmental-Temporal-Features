@@ -27,7 +27,7 @@ df_repro = pd.read_csv('reproduction/speaker-verification.csv')
 df_paper = pd.read_csv('paper/speaker-verification.csv')
 
 # Default configurations
-DEFAULT_ARCHS = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+DEFAULT_ARCHS = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer', 'W2V-Bert']
 DEFAULT_COLORMAP = {'OS': '#1f77b4', 'SS': '#ff7f0e', 'SU': '#2ca02c'}
 DEFAULT_GREEN = '#2ca02c'
 
@@ -166,7 +166,7 @@ def paper_vs_repro(archs: Optional[List[str]] = None,
         Whether to show reproduction results. Default: True
     """
     if archs is None:
-        archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet']
+        archs = DEFAULT_ARCHS
     if train_strategies is None:
         train_strategies = ['OS', 'SS']
     
@@ -299,7 +299,7 @@ def abs_eer(comparison_type: str = 'test_strategy',
         Y-axis label. Default: 'EER'
     """
     if archs is None:
-        archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+        archs = DEFAULT_ARCHS
     if datasets is None:
         datasets = ['voxceleb']
     
@@ -510,7 +510,7 @@ def relative_eer(comparison_type: str = 'test_strategy',
         Y-axis label. Default: 'Relative EER improvement (%)'
     """
     if archs is None:
-        archs = ['CNN', 'RNN', 'ResNet', 'F-ResNet', 'Conformer']
+        archs = DEFAULT_ARCHS
     if datasets is None:
         datasets = ['voxceleb']
     

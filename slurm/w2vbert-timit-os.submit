@@ -13,10 +13,6 @@
 source slurm/install.submit
 source slurm/secrets.submit
 
-# install.submit only installs requirements.txt into a new venv; an existing
-# one may predate the transformers dependency of the W2VBert model.
-python3 -c "import transformers" 2>/dev/null || pip3 install transformers
-
 echo "Start experiment..."
 wandb login $WANDB_API_KEY
 python3 -u -m src.experiment \

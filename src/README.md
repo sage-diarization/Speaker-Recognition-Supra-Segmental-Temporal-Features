@@ -254,6 +254,7 @@ python -m src.experiment --config configs/rnn-voxceleb.yaml      # RNN backend o
 python -m src.experiment --config configs/resnet-voxceleb.yaml   # ResNet backend on VoxCeleb
 python -m src.experiment --config configs/fresnet-voxceleb.yaml   # F-ResNet backend on VoxCeleb
 python -m src.experiment --config configs/conformer-voxceleb.yaml   # Conformer backend on VoxCeleb
+python -m src.experiment --config configs/w2vbert-voxceleb.yaml     # frozen w2v-BERT 2.0 on VoxCeleb
 ```
 
 `device: "auto"` (the default, see `configs/cnn_timit.yaml`) picks the best
