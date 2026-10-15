@@ -11,16 +11,10 @@ data:
 model:
   type: "ResNet"
 
-# ResNet34s's original front-end (context/src/00_configs/01_transformation/ResNet.json):
-# a raw (non-mel) magnitude spectrogram with a hamming window -- different
-# from CNN/RNN's mel front-end, per Neururer et al. 2024's stated policy of
-# keeping each model's own original recipe for comparability with prior work.
-transformation:
-  type: "linear"
-  window: "hamming"
-  nfft: 512
-  frame_length_s: 0.025
-  frame_step_s: 0.01
+# No transformation section: the default mel front-end shared with the
+# CNN/RNN/Conformer configs (not ResNet34s's original linear spectrogram,
+# context/src/00_configs/01_transformation/ResNet.json), so its numbers are
+# directly comparable to theirs.
 
 resnet:
   vlad_clusters: 10
