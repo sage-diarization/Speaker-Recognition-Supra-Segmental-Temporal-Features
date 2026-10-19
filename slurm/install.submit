@@ -1,8 +1,6 @@
 #!/bin/bash
 
-export PYTHON_VERSION="3.13.12"
-
-module load python/$PYTHON_VERSION
+module load python
 VENV=sst module load uv
 
 echo "Sync dependencies..."
