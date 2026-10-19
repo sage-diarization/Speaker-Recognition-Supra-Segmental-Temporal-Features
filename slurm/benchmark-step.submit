@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --time=60
+#SBATCH --job-name=sst/benchmark-step
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+# Times the training step in isolation (see src/benchmark_step.py) -- no
+# dataset needed. Usage: sbatch slurm/benchmark-step.submit [CONFIG]
+source slurm/install.submit
+
+python3 -u -m src.benchmark_step \
+	--config "${1:-configs/conformer-voxceleb-nope-k1.yaml}"
