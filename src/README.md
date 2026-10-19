@@ -242,7 +242,7 @@ cross-language). There are three differences from the VoxCeleb path:
 ## Running the experiment
 
 ```
-pip install -r requirements.txt
+uv sync && source .venv/bin/activate
 python -m src.experiment --config configs/cnn-timit.yaml         # CNN backend on TIMIT
 python -m src.experiment --config configs/rnn-timit.yaml         # RNN backend on TIMIT
 python -m src.experiment --config configs/resnet-timit.yaml      # ResNet backend on TIMIT

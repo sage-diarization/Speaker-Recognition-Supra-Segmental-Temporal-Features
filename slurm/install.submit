@@ -1,27 +1,14 @@
 #!/bin/bash
 
-CWD=$(pwd)
-
 export PYTHON_VERSION="3.13.12"
-export VENV_PATH="$CWD/.venv"
 
-# rm -Rf $VENV_PATH
-mkdir -p $VENV_PATH
+module load python/$PYTHON_VERSION
+VENV=sst module load uv
 
-if [ -d "$VENV_PATH/bin" ]; then
-    echo "Activating $VENV_PATH..."
-    source "$VENV_PATH/bin/activate"
-else
-    echo "Creating VENV $VENV_PATH..."
-    module load python/$PYTHON_VERSION
-    virtualenv $VENV_PATH
-    source "$VENV_PATH/bin/activate"
-    unset PIP_TARGET
-    unset PYTHONPATH
-
-    echo "Install dependencies..."
-    pip3 install -r requirements.txt
-fi
+echo "Sync dependencies..."
+uv sync --frozen
+# Activate so the submit scripts' plain `python3`/`wandb` calls use the venv.
+source "$(uv run --frozen python -c 'import sys; print(sys.prefix)')/bin/activate"
 
 python --version
 nvidia-smi || rocm-smi
