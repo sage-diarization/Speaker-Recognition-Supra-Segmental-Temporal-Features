@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=32
 #SBATCH --array=0-4%1         # 5 runs (0-4)
 #SBATCH --account=cai_cv
 #SBATCH --partition=gpu_top

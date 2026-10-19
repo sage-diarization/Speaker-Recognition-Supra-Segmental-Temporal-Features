@@ -32,6 +32,7 @@ VARIANTS = {
     "compile": {"compile_mode": "default"},
     "compile-cudagraphs": {"compile_mode": "reduce-overhead"},
     "bf16": {"bf16": True},
+    "compile-cudagraphs-bf16": {"compile_mode": "reduce-overhead", "bf16": True},
     "1-thread": {"threads": 1},
 }
 

@@ -46,6 +46,7 @@ training:
   # features are normalized per utterance, so not frame-local) -- match the
   # SLURM jobs' --cpus-per-task.
   num_workers: 16
+  compile: true            # CUDA graphs, see TrainingConfig.compile
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)

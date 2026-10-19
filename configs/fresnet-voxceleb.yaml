@@ -73,7 +73,8 @@ training:
   batch_size: 100
   checkpoint_every_epochs: 1  # VoxCeleb's expensive epochs: checkpoint every epoch
   paper_checkpoint_epochs: true  # Use all epochs, not just the 11 from the paper
-  num_workers: 16
+  num_workers: 32
+  compile: true            # CUDA graphs, see TrainingConfig.compile
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
