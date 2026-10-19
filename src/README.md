@@ -164,6 +164,29 @@ parallel (with progress output), then caches the result as
 in seconds. Delete those files if a dataset changes. The full run is longer than the SLURM
 jobs' 24h limit, so resubmit the job: it resumes from `checkpoint_every_epochs: 1`.
 
+**Staging on the cluster.** The SLURM jobs don't read VoxCeleb from CephFS
+(one network metadata round trip per drawn segment), but from a copy on the
+node-local `/scratch` SSD: `slurm/stage-voxceleb.submit` extracts a
+pre-packaged copy of each corpus there at job start, and fails the job if a
+package is missing. A package is a directory of `.tar` shards (set
+`VOXCELEB_PACKAGE`/`VOXCELEB2_PACKAGE` in that script) that, extracted
+together, reproduce the corpus root: `wav/...`, the trial lists
+(`veri_test2.txt`, `list_test_hard2.txt`) and `.sst-wav-index.tsv` for
+VoxCeleb1; the speaker tree and `.sst-wav-index.tsv` for VoxCeleb2. Include
+the index, or every job re-reads all 1.1M WAV headers first. Several shards
+extract in parallel, e.g. one per group of speaker directories, with paths
+relative to the root:
+
+```
+cd ~/.cache/datasets/voxceleb2
+tar cf ~/datasets/voxceleb2/meta.tar .sst-wav-index.tsv
+find . -type d -name 'id[0-9][0-9][0-9][0-9][0-9]' | sort | split -n r/64 -d -a 3 - /tmp/shard.
+for list in /tmp/shard.*; do tar cf ~/datasets/voxceleb2/${list##*.}.tar -T "$list"; done
+```
+
+The job then sets `VOXCELEB_ROOT`/`VOXCELEB2_ROOT` to the extracted copies,
+which take precedence over `voxceleb.root`/`voxceleb.vox2_root`.
+
 **VoxCeleb1-only substitute.** Removing `vox2_root` and `eval_trial_meta_url`
 falls back to training on VoxCeleb1's *own* speakers, excluding whichever
 speakers appear in the trial list(s) so train/eval speakers stay disjoint,

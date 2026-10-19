@@ -138,6 +138,22 @@ def test_vox2_root_trains_on_voxceleb2_and_splits_selection_and_reported_trials(
     assert corpus.trial_pairs == _TRIALS_BY_URL["https://example.invalid/h.txt"]
 
 
+def test_env_vars_override_configured_roots(voxceleb_root, tmp_path, monkeypatch):
+    vox2_root = tmp_path / "vox2"
+    _write_wav(vox2_root / "id00012" / "vidA" / "00001.wav")
+    monkeypatch.setenv("VOXCELEB_ROOT", str(voxceleb_root))
+    monkeypatch.setenv("VOXCELEB2_ROOT", str(vox2_root))
+
+    config = ExperimentConfig()
+    config.voxceleb.root = str(tmp_path / "missing-vox1")
+    config.voxceleb.vox2_root = str(tmp_path / "missing-vox2")
+    corpus = VoxCelebCorpus(config)
+
+    assert _FakeVoxCeleb1Verification.last_kwargs["root"] == str(voxceleb_root)
+    assert corpus.speakers("TRAIN") == ["id00012"]
+    assert corpus.utterance_paths("TRAIN", "id00012") == [vox2_root / "id00012" / "vidA" / "00001.wav"]
+
+
 def test_without_eval_trial_list_selection_and_reporting_share_one_list(voxceleb_root):
     config = ExperimentConfig()
     config.voxceleb.root = str(voxceleb_root)

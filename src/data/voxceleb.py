@@ -49,7 +49,10 @@ class VoxCelebCorpus:
 
     def __init__(self, config):
         voxceleb = config.voxceleb
-        root = Path(voxceleb.root).expanduser()
+        # VOXCELEB_ROOT/VOXCELEB2_ROOT win over the config: the SLURM jobs set
+        # them to the copies staged on node-local /scratch (see
+        # slurm/stage-voxceleb.submit).
+        root = Path(os.environ.get("VOXCELEB_ROOT") or voxceleb.root).expanduser()
         root.mkdir(parents=True, exist_ok=True)
         self.dev_trial_pairs = _download_trial_pairs(root, voxceleb.trial_meta_url)
         self.trial_pairs = self.dev_trial_pairs
@@ -59,8 +62,9 @@ class VoxCelebCorpus:
         self._wav_root = root / "wav"
         vox1_counts = _wav_index(self._wav_root, root / _INDEX_FILE, "VoxCeleb1")
         self._sample_counts = {str(self._wav_root / path): count for path, count in vox1_counts.items()}
-        if voxceleb.vox2_root:
-            vox2_root = Path(voxceleb.vox2_root).expanduser()
+        vox2_root = os.environ.get("VOXCELEB2_ROOT") or voxceleb.vox2_root
+        if vox2_root:
+            vox2_root = Path(vox2_root).expanduser()
             vox2_counts = _wav_index(vox2_root, vox2_root / _INDEX_FILE, "VoxCeleb2")
             if not vox2_counts:
                 hint = ""

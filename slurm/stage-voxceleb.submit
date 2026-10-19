@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# Stages VoxCeleb1 + VoxCeleb2 onto the node-local /scratch SSD, so training
+# doesn't open one file per drawn segment on CephFS. Each package is a
+# directory of .tar shards that, extracted together, reproduce the corpus
+# root (see src/README.md's "Running on VoxCeleb"). Shards are extracted
+# straight from CephFS, several in parallel -- no intermediate copy.
+VOXCELEB_PACKAGE="${VOXCELEB_PACKAGE:-$HOME/datasets/voxceleb1}"
+VOXCELEB2_PACKAGE="${VOXCELEB2_PACKAGE:-$HOME/datasets/voxceleb2}"
+
+STAGE_DIR="/scratch/${SLURM_JOB_ID:-$$}"
+NTHREADS=${SLURM_CPUS_PER_TASK:-4}
+(( NTHREADS > 16 )) && NTHREADS=16
+
+for PACKAGE in "$VOXCELEB_PACKAGE" "$VOXCELEB2_PACKAGE"; do
+    if ! compgen -G "$PACKAGE/*.tar" > /dev/null; then
+        echo "No .tar shards found in $PACKAGE (set VOXCELEB_PACKAGE/VOXCELEB2_PACKAGE in slurm/stage-voxceleb.submit)."
+        exit 1
+    fi
+done
+
+echo "[$(date +%T)] Staging VoxCeleb to $STAGE_DIR with $NTHREADS parallel streams..."
+export VOXCELEB_ROOT="$STAGE_DIR/voxceleb1"
+export VOXCELEB2_ROOT="$STAGE_DIR/voxceleb2"
+extract_shards() {  # extract_shards PACKAGE TARGET
+    mkdir -p "$2"
+    if ! printf '%s\0' "$1"/*.tar | xargs -0 -P "$NTHREADS" -I{} tar xf {} -C "$2"; then
+        echo "Extracting $1 to $2 failed."
+        exit 1
+    fi
+}
+extract_shards "$VOXCELEB_PACKAGE" "$VOXCELEB_ROOT"
+extract_shards "$VOXCELEB2_PACKAGE" "$VOXCELEB2_ROOT"
+
+# Without wav/, torchaudio's VoxCeleb1Verification would download all of VoxCeleb1.
+if [ ! -d "$VOXCELEB_ROOT/wav" ]; then
+    echo "$VOXCELEB_PACKAGE did not extract to a VoxCeleb1 root (no wav/ in $VOXCELEB_ROOT)."
+    exit 1
+fi
+du -sh "$VOXCELEB_ROOT" "$VOXCELEB2_ROOT"
+echo "[$(date +%T)] Staging done."
