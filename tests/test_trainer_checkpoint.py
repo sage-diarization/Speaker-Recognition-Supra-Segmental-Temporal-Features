@@ -671,3 +671,59 @@ def test_dataloader_workers_draw_independent_segment_positions():
     starts = [int(x[0, 0, 0, 0]) for x, _ in loader]
     # Batches alternate between the two workers: 0, 1, 0, 1, ...
     assert starts[0::2] != starts[1::2]
+
+
+def test_compile_runs_only_training_batches_through_the_compiled_model(monkeypatch, tmp_path, synthetic_utterances):
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 2
+    config.training.batch_size = 4
+    config.training.compile = True
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    compiled_batches, compile_modes = [], []
+
+    def fake_compile(module, mode=None):
+        compile_modes.append(mode)
+        return lambda x: compiled_batches.append(x.shape[0]) or module(x)
+
+    monkeypatch.setattr(trainer.torch, "compile", fake_compile)
+    checkpoint_path = tmp_path / "run.pt"
+    train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        checkpoint_path=checkpoint_path, checkpoint_every_epochs=1,
+    )
+
+    assert compile_modes == ["reduce-overhead"]
+    # 12 utterances / batch 4 = 3 training batches per epoch, nothing from dev eval.
+    assert compiled_batches == [4] * 6
+    saved = torch.load(checkpoint_path)["model_state_dict"]
+    assert saved.keys() == build_model(config).state_dict().keys()
+
+
+def test_compile_trains_with_the_real_torch_compile(tmp_path, synthetic_utterances):
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.model.type = "Conformer"
+    config.training.num_epochs = 1
+    config.training.batch_size = 4
+    config.training.compile = True
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+    history, _ = train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        checkpoint_path=tmp_path / "run.pt",
+    )
+
+    assert len(history) == 1 and np.isfinite(history[0])

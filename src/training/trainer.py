@@ -341,6 +341,14 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
         dev_utterances = list(resolved_utterances(dev_utterances, num_workers))
         print(f"==> Featurized {len(dev_utterances)} dev utterances in {time.perf_counter() - started:.0f}s")
 
+    # Training batches only (fixed shape thanks to drop_last): CUDA graphs
+    # replay each step with a single launch instead of hundreds, so the step
+    # no longer waits on a CPU shared with the DataLoader workers. Dev/test
+    # evaluation keeps the plain model -- its per-utterance window count
+    # varies, which would recompile constantly -- and checkpoints keep saving
+    # the plain model's state_dict.
+    forward = torch.compile(model, mode="reduce-overhead") if config.training.compile else model
+
     model.train()
     loss_module.train()
     history = []
@@ -357,7 +365,9 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                 data_wait += time.perf_counter() - wait_started
                 x, labels = x.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                 optimizer.zero_grad()
-                output = model(x)
+                if config.training.compile:
+                    torch.compiler.cudagraph_mark_step_begin()
+                output = forward(x)
                 loss, _ = loss_module(output.bottleneck, labels)
                 loss.backward()
                 optimizer.step()

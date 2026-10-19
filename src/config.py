@@ -268,6 +268,12 @@ class TrainingConfig:
     # Lazily-featurized corpora (VoxCeleb) read one file per training
     # segment, so they need several to keep the GPU busy.
     num_workers: int = 0
+    # Run training steps through torch.compile(mode="reduce-overhead") (CUDA
+    # graphs on a GPU; see src/training/trainer.py's train()). Same math up to
+    # float rounding, but not bit-identical to eager training, and resuming
+    # is no longer guaranteed bit-exact. Check a model with
+    # slurm/benchmark-step.submit before enabling it.
+    compile: bool = False
 
 
 @dataclass
