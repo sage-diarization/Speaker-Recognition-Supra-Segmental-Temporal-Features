@@ -108,3 +108,38 @@ def test_extract_embeddings_su_draws_with_replacement_from_whole_utterance():
         indices = reference_rng.integers(0, utterance_length, segment_length)
         expected_means.append(features[indices].mean())
     np.testing.assert_allclose(embeddings[0, 0], np.mean(expected_means))
+
+
+def _lazy_utterances():
+    from src.data.lazy_features import LazyFeatures
+
+    rng = np.random.default_rng(0)
+    utterances = []
+    for label, length in enumerate([30, 3, 25, 41]):  # the 3-frame one is too short and skipped
+        features = rng.standard_normal((length, 5)).astype(np.float32)
+        utterances.append((LazyFeatures(lambda features=features: features, length), f"utt{label}"))
+    return utterances
+
+
+def test_extract_embeddings_by_strategy_matches_separate_calls_per_strategy():
+    from src.training.trainer import extract_embeddings_by_strategy
+
+    utterances, segment_length = _lazy_utterances(), 8
+    combined = extract_embeddings_by_strategy(
+        _MeanModel(), utterances, segment_length, {strategy: np.random.default_rng(3) for strategy in ("OS", "SS", "SU")}
+    )
+
+    for strategy in ("OS", "SS", "SU"):
+        embeddings, labels = extract_embeddings(_MeanModel(), utterances, segment_length, strategy, seed=3)
+        np.testing.assert_array_equal(combined[strategy][0], embeddings)
+        np.testing.assert_array_equal(combined[strategy][1], labels)
+    assert list(labels) == ["utt0", "utt2", "utt3"]
+
+
+def test_extract_embeddings_with_workers_matches_in_process_featurization():
+    utterances, segment_length = _lazy_utterances(), 8
+    for strategy in ("OS", "SS", "SU"):
+        in_process = extract_embeddings(_MeanModel(), utterances, segment_length, strategy, seed=1)
+        with_workers = extract_embeddings(_MeanModel(), utterances, segment_length, strategy, seed=1, num_workers=2)
+        np.testing.assert_array_equal(in_process[0], with_workers[0])
+        np.testing.assert_array_equal(in_process[1], with_workers[1])

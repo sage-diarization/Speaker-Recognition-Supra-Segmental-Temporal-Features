@@ -156,7 +156,7 @@ every frame of it. Training reads only the samples behind each drawn segment
 (`LazyFeatures`' `frames_fn`, see `src/data/dataset.py`'s
 `featurize_frame_range`; equal to featurizing the whole file then slicing,
 up to float32 rounding) rather than decoding whole files, spread over
-`training.num_workers` DataLoader workers (8 in the VoxCeleb configs, matched
+`training.num_workers` DataLoader workers (16 in the VoxCeleb configs, matched
 by the SLURM jobs' `--cpus-per-task`). Every utterance's length is needed
 upfront; the first run lists both datasets and reads each file's header in
 parallel (with progress output), then caches the result as

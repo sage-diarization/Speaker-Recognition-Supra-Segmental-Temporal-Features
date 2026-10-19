@@ -33,7 +33,7 @@ from .evaluation.verification import (
 )
 from .models.losses import build_loss
 from .models.registry import build_model
-from .training.trainer import best_checkpoint_path, extract_embeddings, train
+from .training.trainer import best_checkpoint_path, extract_embeddings_by_strategy, train
 
 STRATEGIES = ("OS", "SS", "SU")
 
@@ -511,19 +511,29 @@ def run_experiment(config, corpus=None, strategies=None):
             if paper_comparable_best is not None:
                 raw_sv_paper_comparable.append(paper_comparable_best)
                 summary[f"run{run_idx}/final/SV_EER_paper_comparable"] = paper_comparable_best * 100
-            for test_strategy in STRATEGIES:
-                sv_embeddings, sv_labels = extract_embeddings(
-                    model, sv_eval_utterances, segment_length, test_strategy, seed=run_idx, device=config.device
+            # One pass per utterance set for all test strategies, each with its
+            # own Generator seeded as a separate extract_embeddings(seed=run_idx)
+            # call would be.
+            sv_by_strategy = extract_embeddings_by_strategy(
+                model, sv_eval_utterances, segment_length,
+                {test_strategy: np.random.default_rng(run_idx) for test_strategy in STRATEGIES},
+                device=config.device, num_workers=config.training.num_workers,
+            )
+            if sc_utterances is not None:
+                sc_by_strategy = extract_embeddings_by_strategy(
+                    model, sc_utterances, segment_length,
+                    {test_strategy: np.random.default_rng(run_idx) for test_strategy in STRATEGIES},
+                    device=config.device, num_workers=config.training.num_workers,
                 )
+            for test_strategy in STRATEGIES:
+                sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
                 eer = sv_eval_fn(sv_embeddings, sv_labels)
                 raw_sv[test_strategy].append(eer)
                 record["sv"][test_strategy] = eer
                 summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
 
                 if sc_utterances is not None:
-                    sc_embeddings, sc_labels = extract_embeddings(
-                        model, sc_utterances, segment_length, test_strategy, seed=run_idx, device=config.device
-                    )
+                    sc_embeddings, sc_labels = sc_by_strategy[test_strategy]
                     mr = best_misclassification_rate(sc_embeddings, sc_labels)
                     raw_sc[test_strategy].append(mr)
                     record["sc"][test_strategy] = mr

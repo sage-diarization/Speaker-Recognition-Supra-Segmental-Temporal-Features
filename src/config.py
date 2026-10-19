@@ -259,11 +259,14 @@ class TrainingConfig:
     # np.linspace(0, num_epochs - 1, 11) -- the only epochs context/src's
     # EvalCallback evaluates (TEST_EPOCHS) and so the only candidates behind
     # Neururer et al. 2024's reported numbers. Off (the default), every epoch
-    # is a candidate. Dev EER is still computed every epoch either way.
+    # is a candidate. When set and early stopping is off, dev EER is also only
+    # computed at those 11 epochs (no other epoch can change the outcome);
+    # otherwise it is computed every epoch.
     paper_checkpoint_epochs: bool = False
-    # DataLoader worker processes for training batches (0: load in the main
-    # process). Lazily-featurized corpora (VoxCeleb) read one file per
-    # training segment, so they need several to keep the GPU busy.
+    # DataLoader worker processes for training batches, and for featurizing
+    # dev/evaluation utterances (0: load in the main process).
+    # Lazily-featurized corpora (VoxCeleb) read one file per training
+    # segment, so they need several to keep the GPU busy.
     num_workers: int = 0
 
 

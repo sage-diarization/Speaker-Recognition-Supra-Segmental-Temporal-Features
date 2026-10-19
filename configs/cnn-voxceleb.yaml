@@ -34,7 +34,7 @@ training:
   paper_checkpoint_epochs: true
   # Training segments are read from disk per draw -- match the SLURM jobs'
   # --cpus-per-task.
-  num_workers: 8
+  num_workers: 16
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)

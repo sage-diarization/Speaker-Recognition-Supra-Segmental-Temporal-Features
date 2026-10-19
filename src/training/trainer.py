@@ -1,6 +1,7 @@
 import copy
 import multiprocessing
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,55 @@ def _seed_worker_segment_rng(worker_id):
     epoch, and reproducible on resume since that RNG is checkpointed."""
     info = torch.utils.data.get_worker_info()
     info.dataset.rng = np.random.default_rng(info.seed)
+
+
+def _fork_context(num_workers):
+    # "fork" (where available) hands workers the dataset copy-on-write --
+    # Python 3.14's forkserver default would instead pickle all of it (1M+
+    # LazyFeatures entries on VoxCeleb2) into every worker, every epoch.
+    fork = num_workers > 0 and "fork" in multiprocessing.get_all_start_methods()
+    return "fork" if fork else None
+
+
+class _ResolvedUtterances(torch.utils.data.Dataset):
+    def __init__(self, utterances):
+        self.utterances = utterances
+
+    def __len__(self):
+        return len(self.utterances)
+
+    def __getitem__(self, idx):
+        features_or_loader, label = self.utterances[idx]
+        return resolve_features(features_or_loader), label
+
+
+def _keep_numpy(item):
+    # DataLoader's default (batch_size=None) collate would turn the features
+    # into tensors; extract_embeddings' window draws expect ndarrays.
+    return item
+
+
+def resolved_utterances(utterances, num_workers=0):
+    """(features, label) for every utterance entry, in order, with lazy
+    entries (src/data/lazy_features.py) featurized -- by num_workers
+    DataLoader worker processes when > 0, so reading and featurizing
+    evaluation utterances runs in parallel instead of one at a time in the
+    main process."""
+    if num_workers == 0:
+        return ((resolve_features(features_or_loader), label) for features_or_loader, label in utterances)
+    return DataLoader(
+        _ResolvedUtterances(utterances), batch_size=None, collate_fn=_keep_numpy,
+        num_workers=num_workers, multiprocessing_context=_fork_context(num_workers),
+        # Its own Generator: starting the workers draws a seed from it, which
+        # from torch's global RNG would shift training's shuffling/dropout.
+        generator=torch.Generator(),
+    )
+
+
+def _synchronize(device):
+    """Waits for queued GPU work, so wall-clock timers measure it too."""
+    if torch.device(device).type == "cuda":
+        torch.cuda.synchronize()
 
 
 def _rng_state(dataset, dev_eval_rng):
@@ -230,14 +280,10 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     model.to(device)
     loss_module.to(device)
     num_workers = config.training.num_workers
-    # "fork" (where available) hands workers the dataset copy-on-write --
-    # Python 3.14's forkserver default would instead pickle all of it (1M+
-    # LazyFeatures entries on VoxCeleb2) into every worker, every epoch.
-    fork = num_workers > 0 and "fork" in multiprocessing.get_all_start_methods()
     loader = DataLoader(
         dataset, batch_size=min(config.training.batch_size, len(dataset)), shuffle=True, drop_last=True,
         num_workers=num_workers, worker_init_fn=_seed_worker_segment_rng if num_workers > 0 else None,
-        multiprocessing_context="fork" if fork else None,
+        multiprocessing_context=_fork_context(num_workers), pin_memory=torch.device(device).type == "cuda",
     )
     optimizer = torch.optim.Adam(
         _weight_decay_param_groups(model, loss_module, config.optimizer.weight_decay),
@@ -277,40 +323,71 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
         start_epoch - 1, best_epoch, dev_eer_history, early_stopping_patience, min_improvement_rate
     )
 
+    # With checkpoint selection restricted to the 11 paper epochs and no early
+    # stopping (which reads every epoch's dev EER), no other epoch's dev EER
+    # can affect the outcome, so only those 11 are evaluated.
+    evaluate_every_epoch = not config.training.paper_checkpoint_epochs or early_stopping_patience is not None
+    if dev_utterances is not None and not already_stopped:
+        # Featurized once (in parallel) and kept in memory, instead of
+        # re-reading and re-featurizing every dev utterance at every dev eval.
+        started = time.perf_counter()
+        dev_utterances = list(resolved_utterances(dev_utterances, num_workers))
+        print(f"==> Featurized {len(dev_utterances)} dev utterances in {time.perf_counter() - started:.0f}s")
+
     model.train()
     loss_module.train()
     history = []
     if not already_stopped:
         for epoch in range(start_epoch, config.training.num_epochs):
-            epoch_loss, n_batches = 0.0, 0
+            epoch_started = time.perf_counter()
+            data_wait = 0.0
+            # Detached per-batch losses, read back once per epoch: a .item()
+            # per batch would make the CPU wait for every GPU step instead of
+            # queueing the next one while the GPU works.
+            batch_losses = []
+            wait_started = time.perf_counter()
             for x, labels in loader:
-                x, labels = x.to(device), labels.to(device)
+                data_wait += time.perf_counter() - wait_started
+                x, labels = x.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                 optimizer.zero_grad()
                 output = model(x)
                 loss, _ = loss_module(output.bottleneck, labels)
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item()
-                n_batches += 1
+                batch_losses.append(loss.detach())
+                wait_started = time.perf_counter()
+            # Summed as Python floats in batch order, as the per-batch .item() did.
+            epoch_loss = sum(torch.stack(batch_losses).cpu().tolist()) if batch_losses else 0.0
+            n_batches = len(batch_losses)
+            _synchronize(device)
+            train_time = time.perf_counter() - epoch_started
             mean_loss = epoch_loss / max(n_batches, 1)
             history.append(mean_loss)
-            tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}train/loss": mean_loss})
+            timings = {
+                "time/train_s": train_time,
+                "time/data_wait_s": data_wait,
+                "time/data_wait_fraction": data_wait / train_time if train_time > 0 else 0.0,
+                "throughput/segments_per_s": n_batches * loader.batch_size / train_time if train_time > 0 else 0.0,
+            }
 
             if dev_utterances is not None:
-                dev_embeddings, dev_labels = extract_embeddings(
-                    model, dev_utterances, segment_length, draw_strategy, device=device, rng=dev_eval_rng
-                )
-                dev_eer = dev_eval_fn(dev_embeddings, dev_labels)
-                dev_eer_history.append(dev_eer)
-                tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}dev/EER": dev_eer})
-                if epoch in paper_comparable_epochs and (paper_comparable_best is None or dev_eer < paper_comparable_best):
-                    paper_comparable_best = dev_eer
-                is_candidate = not config.training.paper_checkpoint_epochs or epoch in paper_comparable_epochs
-                if is_candidate and (best_metric is None or dev_eer < best_metric):
-                    best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
-                    if checkpoint_path is not None:
-                        _save_best_checkpoint(best_checkpoint_path(checkpoint_path), best_epoch, best_metric, best_state)
-                model.train()
+                if evaluate_every_epoch or epoch in paper_comparable_epochs:
+                    eval_started = time.perf_counter()
+                    dev_embeddings, dev_labels = extract_embeddings(
+                        model, dev_utterances, segment_length, draw_strategy, device=device, rng=dev_eval_rng
+                    )
+                    dev_eer = dev_eval_fn(dev_embeddings, dev_labels)
+                    dev_eer_history.append(dev_eer)
+                    tracking.log(run, {f"{metric_prefix}epoch": epoch, f"{metric_prefix}dev/EER": dev_eer})
+                    if epoch in paper_comparable_epochs and (paper_comparable_best is None or dev_eer < paper_comparable_best):
+                        paper_comparable_best = dev_eer
+                    is_candidate = not config.training.paper_checkpoint_epochs or epoch in paper_comparable_epochs
+                    if is_candidate and (best_metric is None or dev_eer < best_metric):
+                        best_metric, best_epoch, best_state = dev_eer, epoch, copy.deepcopy(model.state_dict())
+                        if checkpoint_path is not None:
+                            _save_best_checkpoint(best_checkpoint_path(checkpoint_path), best_epoch, best_metric, best_state)
+                    model.train()
+                    timings["time/dev_eval_s"] = time.perf_counter() - eval_started
 
                 stopped_early = _early_stopping_triggered(
                     epoch, best_epoch, dev_eer_history, early_stopping_patience, min_improvement_rate
@@ -321,13 +398,29 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
                     or (checkpoint_every_epochs is not None and (epoch + 1) % checkpoint_every_epochs == 0)
                 )
                 if should_checkpoint:
+                    checkpoint_started = time.perf_counter()
                     _save_checkpoint(
                         checkpoint_path, epoch, model, optimizer, loss_module,
                         best_metric, best_epoch, best_state, dev_eer_history, _rng_state(dataset, dev_eval_rng),
                         paper_comparable_best,
                     )
-                if stopped_early:
-                    break
+                    timings["time/checkpoint_s"] = time.perf_counter() - checkpoint_started
+
+            tracking.log(run, {
+                f"{metric_prefix}epoch": epoch,
+                f"{metric_prefix}train/loss": mean_loss,
+                **{f"{metric_prefix}{key}": value for key, value in timings.items()},
+            })
+            print(
+                f"==> Epoch {epoch}: loss {mean_loss:.4f}, train {train_time:.0f}s "
+                f"(data wait {data_wait:.0f}s = {timings['time/data_wait_fraction']:.0%}, "
+                f"{timings['throughput/segments_per_s']:.0f} segments/s)"
+                + "".join(f", {key.removeprefix('time/').removesuffix('_s')} {timings[key]:.0f}s"
+                          for key in ("time/dev_eval_s", "time/checkpoint_s") if key in timings),
+                flush=True,
+            )
+            if dev_utterances is not None and stopped_early:
+                break
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -367,7 +460,8 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     return segments
 
 
-def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=None, device="cpu", hop_fraction=0.5, rng=None):
+def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=None, device="cpu", hop_fraction=0.5, rng=None,
+                       num_workers=0):
     """Draws multiple hop-window segments per utterance (step =
     hop_fraction * segment_length; hop_fraction=0.5, i.e. 'H50', is the
     setting Neururer et al. 2024's actual Table 1/2 numbers come from --
@@ -383,23 +477,37 @@ def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=No
     `rng`, when given, is used (and mutated) directly instead of building a
     fresh Generator from `seed` -- lets a caller (train()'s periodic dev
     eval) own a single persistent, checkpoint-able Generator across many
-    calls instead of reseeding every time."""
+    calls instead of reseeding every time.
+
+    num_workers > 0 reads and featurizes lazy utterance entries in that many
+    worker processes (see resolved_utterances); the result is the same."""
     if rng is None:
         rng = np.random.default_rng(seed)
+    return extract_embeddings_by_strategy(
+        model, utterances, segment_length, {draw_strategy: rng}, device, hop_fraction, num_workers
+    )[draw_strategy]
+
+
+def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0):
+    """extract_embeddings for several draw strategies at once -- rngs maps
+    each strategy to the Generator its windows are drawn with -- featurizing
+    every utterance only once instead of once per strategy. Returns
+    {strategy: (embeddings, labels)}, each equal to a separate
+    extract_embeddings call with that strategy and Generator."""
     step = max(int(hop_fraction * segment_length), 1)
 
     model.eval()
-    embeddings, labels = [], []
+    embeddings, labels = {strategy: [] for strategy in rngs}, []
     with torch.no_grad():
-        for features_or_loader, label in utterances:
-            features = resolve_features(features_or_loader)
+        for features, label in resolved_utterances(utterances, num_workers):
             length = features.shape[0]
             if length <= segment_length:
                 continue
             num_windows = (length - segment_length) // step + 1
-            segments = _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng)
-            tensor = torch.from_numpy(np.stack(segments)).float().unsqueeze(1).to(device)
-            output = model(tensor)
-            embeddings.append(output.backend.mean(dim=0).cpu().numpy())
+            for strategy, rng in rngs.items():
+                segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng)
+                tensor = torch.from_numpy(np.stack(segments)).float().unsqueeze(1).to(device)
+                output = model(tensor)
+                embeddings[strategy].append(output.backend.mean(dim=0).cpu().numpy())
             labels.append(label)
-    return np.stack(embeddings), np.array(labels)
+    return {strategy: (np.stack(embeddings[strategy]), np.array(labels)) for strategy in rngs}

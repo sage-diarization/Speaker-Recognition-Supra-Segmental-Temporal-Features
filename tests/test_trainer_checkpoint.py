@@ -567,8 +567,8 @@ def test_restore_rng_state_moves_the_torch_state_tensors_back_to_cpu(monkeypatch
 
 def test_paper_checkpoint_epochs_restricts_best_checkpoint_to_the_11_epoch_schedule(monkeypatch, tmp_path, synthetic_utterances):
     # Same schedule as above (num_epochs=21 -> even epochs only): with
-    # paper_checkpoint_epochs set, the odd-epoch global minimum (epoch 1) must
-    # not be kept; the best even epoch (6) is.
+    # paper_checkpoint_epochs set and no early stopping, dev EER is computed
+    # at exactly those 11 epochs, and the best of them (epoch 6) is kept.
     utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
     config = ExperimentConfig()
     config.training.num_epochs = 21
@@ -581,21 +581,81 @@ def test_paper_checkpoint_epochs_restricts_best_checkpoint_to_the_11_epoch_sched
     model = build_model(config)
     loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
 
-    eer_sequence = [0.9] * 21
-    eer_sequence[1] = 0.01
-    eer_sequence[6] = 0.05
-    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: eer_sequence.pop(0))
+    eer_by_evaluation = [0.9] * 11
+    eer_by_evaluation[3] = 0.05  # the 4th evaluated epoch: epoch 6
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: eer_by_evaluation.pop(0))
 
     kept_epochs = []
     monkeypatch.setattr(trainer, "_save_best_checkpoint", lambda path, epoch, metric, state: kept_epochs.append(epoch))
+    checkpointed_epochs = []
+    monkeypatch.setattr(trainer, "_save_checkpoint", lambda path, epoch, *a, **k: checkpointed_epochs.append(epoch))
 
     train(
         model, loss_module, dataset, config,
         dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
-        checkpoint_path=tmp_path / "run.pt",
+        checkpoint_path=tmp_path / "run.pt", checkpoint_every_epochs=1,
     )
 
+    assert eer_by_evaluation == []  # evaluated exactly 11 times
     assert kept_epochs == [0, 6]
+    # Skipped dev evals don't skip the periodic checkpoints.
+    assert checkpointed_epochs == list(range(21))
+
+
+def test_paper_checkpoint_epochs_still_evaluates_every_epoch_with_early_stopping(monkeypatch, synthetic_utterances):
+    # Early stopping reads every epoch's dev EER, so none may be skipped.
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 5
+    config.training.batch_size = 4
+    config.training.paper_checkpoint_epochs = True
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    evaluations = []
+    monkeypatch.setattr(trainer, "equal_error_rate", lambda *a, **k: evaluations.append(1) or 0.5)
+
+    train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+        early_stopping_patience=100,
+    )
+
+    assert len(evaluations) == 5
+
+
+def test_train_logs_per_epoch_timings(monkeypatch, synthetic_utterances):
+    utterances = synthetic_utterances(num_speakers=3, utterances_per_speaker=4)
+    config = ExperimentConfig()
+    config.training.num_epochs = 2
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    segment_length = config.data.segment_length(config.transformation)
+
+    dataset = SegmentDataset(utterances, segment_length, "OS", seed=0)
+    model = build_model(config)
+    loss_module = build_loss(config, bottleneck_dim=512, num_speakers=3)
+
+    logged = []
+    monkeypatch.setattr(trainer.tracking, "log", lambda run, metrics, step=None: logged.append(metrics))
+
+    train(
+        model, loss_module, dataset, config,
+        dev_utterances=utterances, segment_length=segment_length, draw_strategy="OS",
+    )
+
+    epoch_logs = [metrics for metrics in logged if "train/loss" in metrics]
+    assert [metrics["epoch"] for metrics in epoch_logs] == [0, 1]
+    for metrics in epoch_logs:
+        assert metrics["time/train_s"] > 0
+        assert 0 <= metrics["time/data_wait_s"] <= metrics["time/train_s"]
+        assert 0 <= metrics["time/data_wait_fraction"] <= 1
+        assert metrics["throughput/segments_per_s"] > 0
+        assert metrics["time/dev_eval_s"] > 0
 
 
 def test_dataloader_workers_draw_independent_segment_positions():

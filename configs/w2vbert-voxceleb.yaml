@@ -45,7 +45,7 @@ training:
   # Training segments are read from disk per draw (whole file: w2vbert
   # features are normalized per utterance, so not frame-local) -- match the
   # SLURM jobs' --cpus-per-task.
-  num_workers: 8
+  num_workers: 16
 
 wandb:
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
