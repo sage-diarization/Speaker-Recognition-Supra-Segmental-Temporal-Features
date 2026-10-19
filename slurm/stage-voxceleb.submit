@@ -37,5 +37,27 @@ if [ ! -d "$VOXCELEB_ROOT/wav" ]; then
     echo "$VOXCELEB_PACKAGE did not extract to a VoxCeleb1 root (no wav/ in $VOXCELEB_ROOT)."
     exit 1
 fi
+
+# Every file the package's index lists (all of the source corpus, so also
+# every VoxCeleb1 trial-list file) must have been extracted -- an incomplete
+# package would otherwise only fail once a missing file is first read, or,
+# without an index, silently train on fewer files.
+check_complete() {  # check_complete PACKAGE ROOT INDEX_BASE_DIR
+    local index="$2/.sst-wav-index.tsv" missing="$2/.sst-missing.txt"
+    if [ ! -f "$index" ]; then
+        echo "$1 contains no .sst-wav-index.tsv, so its completeness can't be checked."
+        exit 1
+    fi
+    comm -23 <(cut -f1 "$index" | LC_ALL=C sort) <(cd "$3" && find . -name '*.wav' -printf '%P\n' | LC_ALL=C sort) > "$missing"
+    if [ -s "$missing" ]; then
+        echo "$1 is incomplete: $(wc -l < "$missing") of $(wc -l < "$index") indexed files missing after extraction, e.g.:"
+        head -5 "$missing"
+        exit 1
+    fi
+    rm "$missing"
+}
+# VoxCeleb1's index is relative to its wav/ directory, VoxCeleb2's to its root.
+check_complete "$VOXCELEB_PACKAGE" "$VOXCELEB_ROOT" "$VOXCELEB_ROOT/wav"
+check_complete "$VOXCELEB2_PACKAGE" "$VOXCELEB2_ROOT" "$VOXCELEB2_ROOT"
 du -sh "$VOXCELEB_ROOT" "$VOXCELEB2_ROOT"
 echo "[$(date +%T)] Staging done."

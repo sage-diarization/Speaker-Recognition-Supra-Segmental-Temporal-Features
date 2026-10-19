@@ -172,8 +172,10 @@ package is missing. A package is a directory of `.tar` shards (set
 `VOXCELEB_PACKAGE`/`VOXCELEB2_PACKAGE` in that script) that, extracted
 together, reproduce the corpus root: `wav/...`, the trial lists
 (`veri_test2.txt`, `list_test_hard2.txt`) and `.sst-wav-index.tsv` for
-VoxCeleb1; the speaker tree and `.sst-wav-index.tsv` for VoxCeleb2. Include
-the index, or every job re-reads all 1.1M WAV headers first. Several shards
+VoxCeleb1; the speaker tree and `.sst-wav-index.tsv` for VoxCeleb2. The
+index is required: after extraction the job checks that every file it lists
+(the whole source corpus, so also every trial-list file) was extracted, and
+fails otherwise -- e.g. on a shard that went missing while packaging. Several shards
 extract in parallel, e.g. one per group of speaker directories, with paths
 relative to the root:
 
