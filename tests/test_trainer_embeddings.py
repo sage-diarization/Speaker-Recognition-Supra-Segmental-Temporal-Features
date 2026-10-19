@@ -143,3 +143,18 @@ def test_extract_embeddings_with_workers_matches_in_process_featurization():
         with_workers = extract_embeddings(_MeanModel(), utterances, segment_length, strategy, seed=1, num_workers=2)
         np.testing.assert_array_equal(in_process[0], with_workers[0])
         np.testing.assert_array_equal(in_process[1], with_workers[1])
+
+
+def test_worker_featurization_errors_name_the_utterance_and_the_cause(tmp_path):
+    import functools
+
+    import soundfile as sf
+
+    from src.data.lazy_features import LazyFeatures
+    from src.training.trainer import resolved_utterances
+
+    missing = tmp_path / "id10001" / "clip" / "00001.wav"
+    utterances = [(LazyFeatures(functools.partial(sf.read, str(missing)), 100), "id10001/clip/00001.wav")]
+
+    with pytest.raises(RuntimeError, match=r"'id10001/clip/00001.wav' failed: LibsndfileError: .*00001\.wav"):
+        list(resolved_utterances(utterances, num_workers=1))

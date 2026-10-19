@@ -68,7 +68,14 @@ class _ResolvedUtterances(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         features_or_loader, label = self.utterances[idx]
-        return resolve_features(features_or_loader), label
+        try:
+            return resolve_features(features_or_loader), label
+        except Exception as error:
+            # Formatted here, in the worker: DataLoader re-raises a worker's
+            # exception by calling its class with just the message, which
+            # e.g. soundfile's LibsndfileError (expecting an error code)
+            # can't take, losing the file and the reason.
+            raise RuntimeError(f"Featurizing utterance {label!r} failed: {type(error).__name__}: {error}") from error
 
 
 def _keep_numpy(item):
