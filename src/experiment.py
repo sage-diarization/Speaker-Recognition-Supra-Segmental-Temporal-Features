@@ -519,10 +519,13 @@ def run_experiment(config, corpus=None, strategies=None):
             # call would be.
             started = time.perf_counter()
             print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
+            # Featurized in this process (num_workers=0): with DataLoader workers
+            # alive next to the eager GPU forward passes, the VoxCeleb1-H
+            # evaluation slowed to a crawl (GPU idle, main process at 100% CPU).
             sv_by_strategy = extract_embeddings_by_strategy(
                 model, sv_eval_utterances, segment_length,
                 {test_strategy: np.random.default_rng(run_idx) for test_strategy in STRATEGIES},
-                device=config.device, num_workers=config.training.num_workers, log_every=10_000,
+                device=config.device, log_every=10_000,
             )
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
