@@ -191,3 +191,51 @@ def test_forked_workers_do_not_copy_the_parents_objects_on_garbage_collection():
         gc.unfreeze()
     assert len(inherited) == 1_000_000
     assert growth_mb < 20
+
+
+def _per_utterance_reference(model, utterances, segment_length, strategy, seed, hop_fraction=0.5):
+    """The previous extract_embeddings: one forward pass per utterance."""
+    import torch
+
+    from src.training.trainer import _eval_windows
+
+    rng, step = np.random.default_rng(seed), max(int(hop_fraction * segment_length), 1)
+    model.eval()
+    embeddings = []
+    with torch.no_grad():
+        for features_or_loader, _ in utterances:
+            features = features_or_loader() if callable(features_or_loader) else features_or_loader
+            if features.shape[0] <= segment_length:
+                continue
+            num_windows = (features.shape[0] - segment_length) // step + 1
+            segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng)
+            embeddings.append(model(torch.from_numpy(np.stack(segments)).float().unsqueeze(1)).backend.mean(dim=0).numpy())
+    return np.stack(embeddings)
+
+
+def test_chunked_cross_utterance_batches_match_per_utterance_forward_passes(monkeypatch):
+    from src.config import ExperimentConfig
+    from src.data.lazy_features import LazyFeatures
+    from src.models.registry import build_model
+    from src.training import trainer
+
+    config = ExperimentConfig()
+    config.model.type = "Conformer"
+    model = build_model(config)
+    segment_length, num_freqs = 20, config.transformation.num_freqs
+    rng = np.random.default_rng(0)
+    # Lengths give 1..9 windows each (10 is too short and skipped): with 3
+    # utterances per chunk and 7 windows per batch, batches span utterances
+    # and chunks, and the 90-frame utterance alone exceeds one batch.
+    utterances = []
+    for i, length in enumerate([25, 10, 40, 90, 31, 60, 22, 45]):
+        features = rng.standard_normal((length, num_freqs)).astype(np.float32)
+        utterances.append((LazyFeatures(lambda features=features: features, length), f"utt{i}"))
+    monkeypatch.setattr(trainer, "EMBEDDING_CHUNK_UTTERANCES", 3)
+    monkeypatch.setattr(trainer, "EMBEDDING_BATCH_WINDOWS", 7)
+
+    for strategy in ("OS", "SS", "SU"):
+        embeddings, labels = trainer.extract_embeddings(model, utterances, segment_length, strategy, seed=4)
+        np.testing.assert_allclose(embeddings, _per_utterance_reference(model, utterances, segment_length, strategy, seed=4),
+                                   rtol=1e-4, atol=1e-5)
+        assert list(labels) == ["utt0", "utt2", "utt3", "utt4", "utt5", "utt6", "utt7"]

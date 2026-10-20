@@ -514,6 +514,12 @@ def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=No
     )[draw_strategy]
 
 
+# Utterances featurized (in memory) per round of extract_embeddings_by_strategy,
+# and windows per forward pass.
+EMBEDDING_CHUNK_UTTERANCES = 5000
+EMBEDDING_BATCH_WINDOWS = 2048
+
+
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
                                    log_every=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
@@ -521,24 +527,48 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
     every utterance only once instead of once per strategy. Returns
     {strategy: (embeddings, labels)}, each equal to a separate
     extract_embeddings call with that strategy and Generator. log_every
-    prints progress every that many utterances."""
+    prints progress every that many utterances.
+
+    Utterances are featurized EMBEDDING_CHUNK_UTTERANCES at a time, and the
+    DataLoader workers have exited before that chunk's forward passes run:
+    with workers alive next to eager GPU work, the VoxCeleb1-H evaluation
+    slowed to a crawl. The windows of many utterances share a forward pass
+    (up to EMBEDDING_BATCH_WINDOWS) instead of one small pass per utterance
+    and strategy; each window is embedded independently (eval mode), so this
+    changes at most float rounding."""
     step = max(int(hop_fraction * segment_length), 1)
     started = time.perf_counter()
 
+    def embed(windows, counts):
+        """Per-utterance mean backend embedding, for consecutive utterances
+        whose windows (counts[i] each) are concatenated in `windows`."""
+        tensor = torch.from_numpy(np.concatenate(windows)).float().unsqueeze(1).to(device)
+        backend = model(tensor).backend
+        return [part.mean(dim=0).cpu().numpy() for part in torch.split(backend, counts)]
+
     model.eval()
     embeddings, labels = {strategy: [] for strategy in rngs}, []
+    pending = {strategy: ([], []) for strategy in rngs}  # windows, window count per utterance
     with torch.no_grad():
-        for done, (features, label) in enumerate(resolved_utterances(utterances, num_workers), start=1):
-            if log_every and done % log_every == 0:
+        for chunk_start in range(0, len(utterances), EMBEDDING_CHUNK_UTTERANCES):
+            chunk = utterances[chunk_start:chunk_start + EMBEDDING_CHUNK_UTTERANCES]
+            for features, label in list(resolved_utterances(chunk, num_workers)):
+                length = features.shape[0]
+                if length <= segment_length:
+                    continue
+                num_windows = (length - segment_length) // step + 1
+                for strategy, rng in rngs.items():
+                    windows, counts = pending[strategy]
+                    windows.append(np.stack(_eval_windows(features, segment_length, step, num_windows, strategy, rng)))
+                    counts.append(num_windows)
+                    if sum(counts) >= EMBEDDING_BATCH_WINDOWS:
+                        embeddings[strategy].extend(embed(windows, counts))
+                        pending[strategy] = ([], [])
+                labels.append(label)
+            done = chunk_start + len(chunk)
+            if log_every and (done // log_every) > (chunk_start // log_every):
                 print(f"==> Embedded {done}/{len(utterances)} utterances ({time.perf_counter() - started:.0f}s)", flush=True)
-            length = features.shape[0]
-            if length <= segment_length:
-                continue
-            num_windows = (length - segment_length) // step + 1
-            for strategy, rng in rngs.items():
-                segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng)
-                tensor = torch.from_numpy(np.stack(segments)).float().unsqueeze(1).to(device)
-                output = model(tensor)
-                embeddings[strategy].append(output.backend.mean(dim=0).cpu().numpy())
-            labels.append(label)
+        for strategy, (windows, counts) in pending.items():
+            if counts:
+                embeddings[strategy].extend(embed(windows, counts))
     return {strategy: (np.stack(embeddings[strategy]), np.array(labels)) for strategy in rngs}
