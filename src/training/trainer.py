@@ -1,4 +1,5 @@
 import copy
+import gc
 import multiprocessing
 import os
 import time
@@ -56,6 +57,14 @@ def _fork_context(num_workers):
     # Python 3.14's forkserver default would instead pickle all of it (1M+
     # LazyFeatures entries on VoxCeleb2) into every worker, every epoch.
     fork = num_workers > 0 and "fork" in multiprocessing.get_all_start_methods()
+    if fork:
+        # A worker's first full garbage collection would otherwise visit every
+        # object inherited from this process, copying the memory pages they
+        # live on (~1 GB per worker on VoxCeleb2) -- with 32 workers living
+        # for hours during the final evaluation, enough to get the job
+        # OOM-killed. Frozen objects are skipped by the garbage collector
+        # (here and in the workers); reference counting still frees them.
+        gc.freeze()
     return "fork" if fork else None
 
 
@@ -505,18 +514,23 @@ def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=No
     )[draw_strategy]
 
 
-def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0):
+def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
+                                   log_every=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
     each strategy to the Generator its windows are drawn with -- featurizing
     every utterance only once instead of once per strategy. Returns
     {strategy: (embeddings, labels)}, each equal to a separate
-    extract_embeddings call with that strategy and Generator."""
+    extract_embeddings call with that strategy and Generator. log_every
+    prints progress every that many utterances."""
     step = max(int(hop_fraction * segment_length), 1)
+    started = time.perf_counter()
 
     model.eval()
     embeddings, labels = {strategy: [] for strategy in rngs}, []
     with torch.no_grad():
-        for features, label in resolved_utterances(utterances, num_workers):
+        for done, (features, label) in enumerate(resolved_utterances(utterances, num_workers), start=1):
+            if log_every and done % log_every == 0:
+                print(f"==> Embedded {done}/{len(utterances)} utterances ({time.perf_counter() - started:.0f}s)", flush=True)
             length = features.shape[0]
             if length <= segment_length:
                 continue

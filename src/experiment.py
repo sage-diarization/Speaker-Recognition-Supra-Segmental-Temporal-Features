@@ -1,9 +1,12 @@
 import argparse
+import faulthandler
 import functools
 import itertools
 import json
 import os
+import signal
 import statistics
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -514,11 +517,14 @@ def run_experiment(config, corpus=None, strategies=None):
             # One pass per utterance set for all test strategies, each with its
             # own Generator seeded as a separate extract_embeddings(seed=run_idx)
             # call would be.
+            started = time.perf_counter()
+            print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
             sv_by_strategy = extract_embeddings_by_strategy(
                 model, sv_eval_utterances, segment_length,
                 {test_strategy: np.random.default_rng(run_idx) for test_strategy in STRATEGIES},
-                device=config.device, num_workers=config.training.num_workers,
+                device=config.device, num_workers=config.training.num_workers, log_every=10_000,
             )
+            print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
                 sc_by_strategy = extract_embeddings_by_strategy(
                     model, sc_utterances, segment_length,
@@ -613,6 +619,10 @@ def format_results(results):
 
 
 def main():
+    # `kill -USR1 <pid>` prints every thread's Python stack to the log (also
+    # in DataLoader workers, which inherit the handler) -- the cluster doesn't
+    # allow attaching a debugger such as py-spy.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="path to a YAML experiment config")
     parser.add_argument(
