@@ -232,13 +232,20 @@ def test_chunked_cross_utterance_batches_match_per_utterance_forward_passes(monk
         features = rng.standard_normal((length, num_freqs)).astype(np.float32)
         utterances.append((LazyFeatures(lambda features=features: features, length), f"utt{i}"))
     monkeypatch.setattr(trainer, "EMBEDDING_CHUNK_UTTERANCES", 3)
-    monkeypatch.setattr(trainer, "EMBEDDING_BATCH_WINDOWS", 7)
+    monkeypatch.setattr(trainer, "EMBEDDING_BATCH_FRAMES", 7 * segment_length)
 
     for strategy in ("OS", "SS", "SU"):
         embeddings, labels = trainer.extract_embeddings(model, utterances, segment_length, strategy, seed=4)
         np.testing.assert_allclose(embeddings, _per_utterance_reference(model, utterances, segment_length, strategy, seed=4),
                                    rtol=1e-4, atol=1e-5)
         assert list(labels) == ["utt0", "utt2", "utt3", "utt4", "utt5", "utt6", "utt7"]
+
+    # No forward pass exceeds 7 windows, except the 90-frame utterance's own 8.
+    batch_sizes = []
+    model.register_forward_pre_hook(lambda module, args: batch_sizes.append(args[0].shape[0]))
+    trainer.extract_embeddings(model, utterances, segment_length, "OS", seed=4)
+    assert max(batch_sizes) == 8 and batch_sizes.count(8) == 1
+    assert all(size <= 7 for size in batch_sizes if size != 8)
 
 
 def test_eval_windows_block_shuffle_keeps_window_frames_and_block_order():

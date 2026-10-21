@@ -526,9 +526,12 @@ def extract_embeddings(model, utterances, segment_length, draw_strategy, seed=No
 
 
 # Utterances featurized (in memory) per round of extract_embeddings_by_strategy,
-# and windows per forward pass.
+# and input frames per forward pass: 2048 windows of 1 s (94 frames), half as
+# many of 2 s. Counted in frames because a forward pass's memory grows with
+# window length; e.g. a 2 s batch of 2048 windows took 14 GB in the first
+# convolution of a Conformer without time subsampling.
 EMBEDDING_CHUNK_UTTERANCES = 5000
-EMBEDDING_BATCH_WINDOWS = 2048
+EMBEDDING_BATCH_FRAMES = 2048 * 94
 
 
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
@@ -544,10 +547,12 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
     DataLoader workers have exited before that chunk's forward passes run:
     with workers alive next to eager GPU work, the VoxCeleb1-H evaluation
     slowed to a crawl. The windows of many utterances share a forward pass
-    (up to EMBEDDING_BATCH_WINDOWS) instead of one small pass per utterance
-    and strategy; each window is embedded independently (eval mode), so this
+    (up to EMBEDDING_BATCH_FRAMES frames; only an utterance with more windows
+    than that alone exceeds it) instead of one small pass per utterance and
+    strategy; each window is embedded independently (eval mode), so this
     changes at most float rounding."""
     step = max(int(hop_fraction * segment_length), 1)
+    batch_windows = max(EMBEDDING_BATCH_FRAMES // segment_length, 1)
     started = time.perf_counter()
 
     def embed(windows, counts):
@@ -570,11 +575,11 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                 num_windows = (length - segment_length) // step + 1
                 for strategy, rng in rngs.items():
                     windows, counts = pending[strategy]
+                    if counts and sum(counts) + num_windows > batch_windows:
+                        embeddings[strategy].extend(embed(windows, counts))
+                        windows, counts = pending[strategy] = ([], [])
                     windows.append(np.stack(_eval_windows(features, segment_length, step, num_windows, strategy, rng)))
                     counts.append(num_windows)
-                    if sum(counts) >= EMBEDDING_BATCH_WINDOWS:
-                        embeddings[strategy].extend(embed(windows, counts))
-                        pending[strategy] = ([], [])
                 labels.append(label)
             done = chunk_start + len(chunk)
             if log_every and (done // log_every) > (chunk_start // log_every):
