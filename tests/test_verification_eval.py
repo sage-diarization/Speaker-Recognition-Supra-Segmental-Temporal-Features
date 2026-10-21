@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from src.evaluation.verification import (
+    min_dcf,
     IndexedTrials,
     build_verification_pairs,
     cosine_similarity,
@@ -116,3 +117,20 @@ def test_indexed_trial_eer_matches_trial_list_eer_across_chunk_boundaries():
 
     expected = trial_list_equal_error_rate(embeddings, utterance_ids, trial_pairs)
     assert indexed_trial_equal_error_rate(embeddings, utterance_ids, trials, chunk_size=7) == pytest.approx(expected, abs=1e-6)
+
+
+def test_min_dcf_matches_a_brute_force_threshold_search():
+    rng = np.random.default_rng(0)
+    labels = rng.integers(0, 2, 500)
+    scores = labels + rng.normal(0, 0.8, 500)
+    p_target = 0.05
+    costs = []
+    for threshold in np.concatenate([[np.inf], np.sort(scores)]):
+        p_miss = np.mean(scores[labels == 1] < threshold)
+        p_fa = np.mean(scores[labels == 0] >= threshold)
+        costs.append((p_miss * p_target + p_fa * (1 - p_target)) / p_target)
+    assert min_dcf(labels, scores, p_target=p_target) == pytest.approx(min(costs))
+
+
+def test_min_dcf_is_zero_for_separable_scores():
+    assert min_dcf(np.array([0, 0, 1, 1]), np.array([0.1, 0.2, 0.8, 0.9])) == 0.0

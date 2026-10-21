@@ -58,6 +58,15 @@ def log_summary(run, metrics):
             run.summary[key] = value
 
 
+def log_line_series(run, key, xs, series, title, xname):
+    """A line chart under `key`, one line per entry of series ({name: y
+    values at xs}) -- e.g. src/experiment.py's EER over shuffled block span."""
+    if run is not None:
+        import wandb
+
+        run.log({key: wandb.plot.line_series(xs=xs, ys=list(series.values()), keys=list(series), title=title, xname=xname)})
+
+
 def finish(run):
     if run is not None:
         run.finish()

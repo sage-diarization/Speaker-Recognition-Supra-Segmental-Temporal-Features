@@ -13,6 +13,7 @@ def test_disabled_config_never_starts_a_run():
 
 def test_log_summary_and_finish_are_safe_noops_for_no_run():
     tracking.log(None, {"a": 1})
+    tracking.log_line_series(None, "chart", [1], {"a": [1]}, "title", "x")
     tracking.log_summary(None, {"a": 1})
     tracking.finish(None)
 
@@ -26,6 +27,7 @@ def test_enabled_config_in_disabled_mode_starts_a_real_run_without_network():
 
     tracking.log(run, {"train/loss": 0.5}, step=0)
     tracking.log_summary(run, {"final/SV_EER_test-OS": 0.1})
+    tracking.log_line_series(run, "final/chart", [64, 134], {"run0": [30.0, 20.0]}, "title", "x")
     tracking.finish(run)
 
 

@@ -54,18 +54,23 @@ class RelativeMultiHeadSelfAttention(nn.Module):
         self.out = nn.Linear(dim, dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, pos_k=None):
+    def attention_weights(self, x, pos_k=None):
+        """Softmax attention weights (batch, heads, query, key), before dropout."""
         batch, seq_len, _ = x.shape
         q = self.query(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.key(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.value(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         scores = torch.einsum("bhid,bhjd->bhij", q, k)
         if pos_k is not None:
             scores = scores + torch.einsum("bhid,ijd->bhij", q, pos_k)
         scores = scores / (self.head_dim**0.5)
+        return torch.softmax(scores, dim=-1)
 
-        weights = self.dropout(torch.softmax(scores, dim=-1))
+    def forward(self, x, pos_k=None):
+        batch, seq_len, _ = x.shape
+        v = self.value(x).view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        weights = self.dropout(self.attention_weights(x, pos_k))
         out = torch.einsum("bhij,bhjd->bhid", weights, v)
         out = out.transpose(1, 2).reshape(batch, seq_len, -1)
         return self.out(out)
@@ -175,14 +180,22 @@ class ConvSubsampling(nn.Module):
     features to encoder_dim. Only num_freqs (not segment length) is needed:
     the encoder that follows operates on a variable-length time axis, and
     the backend pools over time, so no segment_length-dependent fixed size
-    is baked in (contrast CNNBackend's AdaptiveAvgPool2d trace)."""
+    is baked in (contrast CNNBackend's AdaptiveAvgPool2d trace).
 
-    def __init__(self, num_freqs, encoder_dim):
+    time_kernel/time_stride set both convolutions' kernel size and stride
+    along time (frequency always uses 3/2): time_kernel=1 sees no
+    neighbouring frames, time_stride=1 keeps every frame. Padding is
+    time_kernel // 2, keeping frames aligned."""
+
+    def __init__(self, num_freqs, encoder_dim, time_kernel=3, time_stride=2):
         super().__init__()
+        if time_kernel % 2 == 0:
+            raise ValueError(f"time_kernel must be odd, got {time_kernel}")
+        conv_kwargs = dict(kernel_size=(time_kernel, 3), stride=(time_stride, 2), padding=(time_kernel // 2, 1))
         self.conv = nn.Sequential(
-            nn.Conv2d(1, encoder_dim, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(1, encoder_dim, **conv_kwargs),
             nn.ReLU(),
-            nn.Conv2d(encoder_dim, encoder_dim, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(encoder_dim, encoder_dim, **conv_kwargs),
             nn.ReLU(),
         )
         with torch.no_grad():
@@ -209,9 +222,11 @@ class ConformerBackend(nn.Module):
         conv_kernel_size,
         dropout,
         use_relative_positional_encoding,
+        subsampling_time_kernel=3,
+        subsampling_time_stride=2,
     ):
         super().__init__()
-        self.subsampling = ConvSubsampling(num_freqs, encoder_dim)
+        self.subsampling = ConvSubsampling(num_freqs, encoder_dim, subsampling_time_kernel, subsampling_time_stride)
         self.dropout = nn.Dropout(dropout)
         self.encoder = ConformerEncoder(
             dim=encoder_dim,
@@ -249,4 +264,6 @@ def build_conformer(config):
         conv_kernel_size=config.conformer.conv_kernel_size,
         dropout=config.conformer.dropout,
         use_relative_positional_encoding=config.conformer.use_relative_positional_encoding,
+        subsampling_time_kernel=config.conformer.subsampling_time_kernel,
+        subsampling_time_stride=config.conformer.subsampling_time_stride,
     )

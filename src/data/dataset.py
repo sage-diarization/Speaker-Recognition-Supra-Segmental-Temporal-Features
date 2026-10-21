@@ -46,7 +46,9 @@ def featurize_waveform(waveform, transformation_config):
     else:
         spectrogram = compute_mel_spectrogram(waveform, transformation_config)
     spectrogram = apply_drc(spectrogram)
-    return normalise_standardize(spectrogram)
+    # "segment" normalization is applied per model input (see
+    # src/models/registry.py's SegmentMeanNormalization).
+    return normalise_standardize(spectrogram) if transformation_config.normalization == "frame" else spectrogram
 
 
 def featurize_frame_range(read_samples_fn, path, start, stop, transformation_config):

@@ -22,8 +22,17 @@ class TransformationConfig:
     # "hann" (default) or "hamming" -- ResNet's front-end uses hamming
     # (context/src/setup/utils.py's window_map).
     window: str = "hann"
+    # "frame" (default): per-frame z-score across frequency, which also
+    # removes each frame's level, i.e. the energy contour (matches
+    # context/src). "segment": each band's mean over the model's input segment
+    # (training segment or evaluation window) is subtracted, removing
+    # recording gain and channel but keeping the energy contour. "none": no
+    # normalization. Not applied for type "w2vbert", which normalizes itself.
+    normalization: str = "frame"
 
     def __post_init__(self):
+        if self.normalization not in ("frame", "segment", "none"):
+            raise ValueError(f"normalization must be 'frame', 'segment' or 'none', got {self.normalization!r}")
         if self.type == "w2vbert" and (self.sample_rate, self.frame_length, self.frame_step) != (16000, 400, 160):
             raise ValueError("type 'w2vbert' needs sample_rate 16000, frame_length_s 0.025, frame_step_s 0.01")
 
@@ -139,6 +148,15 @@ class ConformerConfig:
     conv_kernel_size: int = 31
     dropout: float = 0.1
     use_relative_positional_encoding: bool = True
+    # Time-axis kernel size (odd) and stride of both convolution subsampling
+    # layers (see src/models/conformer.py's ConvSubsampling): kernel 1 sees
+    # no neighbouring frames, stride 1 keeps every frame. Kernel 1 and stride
+    # 1, together with use_relative_positional_encoding=False and
+    # conv_kernel_size=1, make the model invariant to the frame order of its
+    # input (kernel 1 with stride 2 does not: which frames survive depends
+    # on their order).
+    subsampling_time_kernel: int = 3
+    subsampling_time_stride: int = 2
 
 
 @dataclass
@@ -211,6 +229,15 @@ class TrainingConfig:
     num_epochs: int = 128
     batch_size: int = 100
     segment_draw: str = "OS"
+    # Draw strategies (src/data/segments.py's DRAW_STRATEGIES) a model is
+    # trained under, one sweep each (see src/experiment.py's run_experiment).
+    strategies: list = field(default_factory=lambda: ["OS", "SS", "SU"])
+    # Keep each run's checkpoints after its final evaluation instead of
+    # deleting them: the best weights (run{idx}.best.pt, e.g. for probing) and
+    # the latest training state (run{idx}.pt), from which a completed run
+    # continues training when num_epochs is raised (see src/experiment.py's
+    # run_experiment).
+    keep_checkpoints: bool = False
     # Playback-speed data augmentation: every training utterance's waveform
     # is played back this many times faster (resampled, so tempo and pitch
     # both scale -- see src/data/dataset.py's change_playback_speed) before
@@ -279,6 +306,8 @@ class TrainingConfig:
 @dataclass
 class EvaluationConfig:
     segment_draw: str = "OS"
+    # Draw strategies every trained model is evaluated under.
+    test_strategies: list = field(default_factory=lambda: ["OS", "SS", "SU"])
     sv_max_sentences: int = 0
     sc_num_speakers: int = 40
     # TIMIT only: explicit SC speaker ids (overrides sc_num_speakers). Left

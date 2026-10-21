@@ -70,3 +70,23 @@ def test_cnn_and_conformer_are_interchangeable_for_a_given_input_shape():
 
     assert cnn_out.backend.shape == conformer_out.backend.shape == (2, 1024)
     assert cnn_out.bottleneck.shape == conformer_out.bottleneck.shape == (2, 512)
+
+
+def test_segment_normalization_subtracts_each_bands_mean_before_the_model():
+    config = ExperimentConfig()
+    config.model.type = "Conformer"
+    config.transformation.normalization = "segment"
+    model = build_model(config)
+    model.eval()
+    x = torch.randn(2, 1, 32, config.transformation.n_mels)
+    offset = torch.randn(1, 1, 1, config.transformation.n_mels) * 10  # constant gain/channel per band
+    torch.testing.assert_close(model(x + offset).backend, model(x).backend, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(model(x).backend, model.model(x - x.mean(dim=2, keepdim=True)).backend)
+
+
+@pytest.mark.parametrize("normalization", ["frame", "none"])
+def test_other_normalizations_build_the_plain_model(normalization):
+    config = ExperimentConfig()
+    config.model.type = "Conformer"
+    config.transformation.normalization = normalization
+    assert isinstance(build_model(config), ConformerBackend)

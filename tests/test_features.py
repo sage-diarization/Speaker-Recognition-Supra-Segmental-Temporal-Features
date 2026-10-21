@@ -142,3 +142,18 @@ def test_vtlp_warp_equals_standardizing_the_warped_unstandardized_spectrogram():
 def test_vtlp_alpha_one_is_identity():
     features = np.random.default_rng(0).standard_normal((4, 128)).astype(np.float32)
     assert vtlp_warp(features, 1.0, TransformationConfig()) is features
+
+
+@pytest.mark.parametrize("normalization", ["segment", "none"])
+def test_featurize_waveform_standardizes_frames_only_for_frame_normalization(normalization):
+    from src.data.dataset import featurize_waveform
+    from src.data.features import normalise_standardize
+
+    waveform = np.random.default_rng(0).normal(size=16000).astype(np.float32)
+    raw = featurize_waveform(waveform, TransformationConfig(normalization=normalization))
+    np.testing.assert_allclose(featurize_waveform(waveform, TransformationConfig()), normalise_standardize(raw), rtol=1e-5)
+
+
+def test_unknown_normalization_is_rejected():
+    with pytest.raises(ValueError):
+        TransformationConfig(normalization="utterance")

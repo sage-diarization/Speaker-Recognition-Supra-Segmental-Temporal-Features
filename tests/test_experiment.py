@@ -307,7 +307,7 @@ def test_run_experiment_end_to_end_on_synthetic_corpus():
     corpus = _StubCorpus(waveforms)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV", "SC", "SV_paper_comparable"}
+    assert set(results.keys()) == {"SV", "SV_minDCF", "SC", "SV_paper_comparable"}
     for task in ("SV", "SC"):
         for train_strategy in ("OS", "SS", "SU"):
             for test_strategy in ("OS", "SS", "SU"):
@@ -319,6 +319,7 @@ def test_run_experiment_end_to_end_on_synthetic_corpus():
     report = format_results(results)
     assert "SV (EER)" in report
     assert "SC (MR)" in report
+    assert "SV (minDCF)" in report
 
 
 def test_run_experiment_end_to_end_with_conformer_model():
@@ -353,7 +354,7 @@ def test_run_experiment_end_to_end_with_conformer_model():
     corpus = _StubCorpus(waveforms)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV", "SC", "SV_paper_comparable"}
+    assert set(results.keys()) == {"SV", "SV_minDCF", "SC", "SV_paper_comparable"}
     for task in ("SV", "SC"):
         for train_strategy in ("OS", "SS", "SU"):
             for test_strategy in ("OS", "SS", "SU"):
@@ -405,6 +406,158 @@ def test_run_experiment_strategies_argument_restricts_which_strategies_run():
     report = format_results(results)
     row_labels = {line.split()[0] for line in report.splitlines() if line[:2] in ("OS", "SS", "SU")}
     assert row_labels == {"SS"}
+
+
+def test_run_experiment_trains_and_tests_on_configured_strategies():
+    config = ExperimentConfig()
+    config.training.num_epochs = 2
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.num_runs = 1
+    config.training.strategies = ["MIX"]
+    config.evaluation.test_strategies = ["OS", "BS4"]
+
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+
+    for task in ("SV", "SV_minDCF", "SC"):
+        assert set(results[task]) == {("MIX", "OS"), ("MIX", "BS4")}
+    report = format_results(results)
+    assert any(line.split()[:2] == ["train\\test", "OS"] and "BS4" in line for line in report.splitlines())
+
+
+def test_run_experiment_stage1_setup_with_segment_normalization():
+    # The stage-1 configs' combination: per-segment normalization, RANDBS
+    # training, and the frame-order-invariant Conformer.
+    config = ExperimentConfig()
+    config.model.type = "Conformer"
+    config.transformation.normalization = "segment"
+    config.training.num_epochs = 2
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.evaluation.test_strategies = ["OS", "SS", "BS16"]
+    config.num_runs = 1
+
+    config.training.strategies = ["RANDBS"]
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+    assert set(results["SV"]) == {("RANDBS", "OS"), ("RANDBS", "SS"), ("RANDBS", "BS16")}
+
+    config.training.strategies = ["OS"]
+    config.conformer.use_relative_positional_encoding = False
+    config.conformer.conv_kernel_size = 1
+    config.conformer.subsampling_time_kernel = 1
+    config.conformer.subsampling_time_stride = 1
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+    # Invariant to frame order: SS and BS16 test windows embed exactly like OS.
+    assert results["SV"][("OS", "SS")].mean == pytest.approx(results["SV"][("OS", "OS")].mean, abs=1e-6)
+    assert results["SV"][("OS", "BS16")].mean == pytest.approx(results["SV"][("OS", "OS")].mean, abs=1e-6)
+
+
+def test_run_experiment_logs_eer_by_block_span_per_run_and_aggregated(monkeypatch):
+    charts = []
+    monkeypatch.setattr(
+        experiment_module.tracking, "log_line_series",
+        lambda run, key, xs, series, title, xname: charts.append((key, xs, series)),
+    )
+    config = ExperimentConfig()
+    config.training.num_epochs = 1
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.num_runs = 2
+    config.training.strategies = ["OS"]
+    config.evaluation.test_strategies = ["BS8", "OS", "SU", "SS"]
+
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+
+    segment_length = config.data.segment_length(config.transformation)
+    expected_ms = [64, 134, round(((segment_length - 1) * 0.01 + 0.064) * 1000)]  # SS, BS8, OS; SU isn't a block shuffle
+    assert [key for key, _, _ in charts] == [
+        "final/SV_EER_by_block/run0", "final/SV_EER_by_block/run1", "final/SV_EER_by_block",
+    ]
+    assert all(xs == expected_ms for _, xs, _ in charts)
+    final = charts[-1][2]
+    assert set(final) == {"run0", "run1", "mean"}
+    order = ["SS", "BS8", "OS"]
+    assert final["mean"] == pytest.approx([results["SV"][("OS", s)].mean * 100 for s in order])
+    assert charts[0][2]["run0"] == final["run0"]
+
+
+def _continuation_config(num_epochs, keep_checkpoints=True):
+    config = ExperimentConfig()
+    config.training.num_epochs = num_epochs
+    config.training.batch_size = 4
+    config.loss.type = "SOFTMAX"
+    config.evaluation.sc_num_speakers = 2
+    config.num_runs = 1
+    config.training.strategies = ["OS"]
+    config.evaluation.test_strategies = ["OS"]
+    config.training.keep_checkpoints = keep_checkpoints
+    return config
+
+
+@pytest.mark.parametrize("keep_checkpoints", [True, False])
+def test_run_experiment_keeps_checkpoints_only_when_configured(keep_checkpoints):
+    config = _continuation_config(2, keep_checkpoints)
+    run_experiment(config, corpus=_tiny_stub_corpus())
+    checkpoint = experiment_module._checkpoint_path(config, "OS", 0)
+    assert checkpoint.exists() == keep_checkpoints
+    assert experiment_module.best_checkpoint_path(checkpoint).exists() == keep_checkpoints
+
+
+def test_run_experiment_continues_completed_runs_when_num_epochs_is_raised(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    run_experiment(_continuation_config(2), corpus=corpus)
+
+    logged_epochs = []
+    real_log = experiment_module.tracking.log
+    def _spy_log(run, metrics, step=None):
+        if "run0/train/loss" in metrics:  # one per trained epoch
+            logged_epochs.append(metrics["run0/epoch"])
+        return real_log(run, metrics, step)
+    monkeypatch.setattr(experiment_module.tracking, "log", _spy_log)
+
+    config = _continuation_config(3)
+    results = run_experiment(config, corpus=corpus)
+
+    assert logged_epochs == [2]  # only the one new epoch is trained
+    checkpoint = torch.load(experiment_module._checkpoint_path(config, "OS", 0), weights_only=False)
+    assert checkpoint["epoch"] == 2
+    manifest = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))
+    assert manifest["completed"][0]["num_epochs"] == 3
+    assert results["SV"][("OS", "OS")].mean == pytest.approx(manifest["completed"][0]["sv"]["OS"])
+
+    # Already at the configured epochs: nothing is trained again.
+    logged_epochs.clear()
+    run_experiment(config, corpus=corpus)
+    assert logged_epochs == []
+
+
+def test_run_experiment_refuses_to_continue_a_run_without_its_checkpoint():
+    corpus = _tiny_stub_corpus()
+    run_experiment(_continuation_config(2, keep_checkpoints=False), corpus=corpus)
+    with pytest.raises(ValueError, match="can't be continued"):
+        run_experiment(_continuation_config(3), corpus=corpus)
+
+
+def test_run_experiment_rejects_unknown_strategies():
+    config = ExperimentConfig()
+    config.evaluation.test_strategies = ["OS", "XX"]
+    with pytest.raises(ValueError, match="XX"):
+        run_experiment(config, corpus=_tiny_stub_corpus())
+
+
+def test_run_experiment_refuses_manifests_missing_a_test_strategy(tmp_path):
+    config = ExperimentConfig()
+    config.training.checkpoint_dir = str(tmp_path)
+    config.training.strategies = ["OS"]
+    config.evaluation.test_strategies = ["OS", "BS4"]
+    config.num_runs = 1
+    manifest = {"wandb_run_id": None, "completed": {"0": {"sv": {"OS": 0.1, "SS": 0.2, "SU": 0.3}}}}
+    experiment_module._save_manifest(experiment_module._manifest_path(config, "OS"), manifest)
+    with pytest.raises(ValueError, match="BS4"):
+        run_experiment(config, corpus=_tiny_stub_corpus())
 
 
 def _tiny_stub_corpus():
@@ -675,7 +828,7 @@ def test_run_experiment_voxceleb_end_to_end_skips_sc_and_uses_trial_list_eval(tm
     corpus = _make_voxceleb_stub_corpus(tmp_path)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV", "SV_paper_comparable"}
+    assert set(results.keys()) == {"SV", "SV_minDCF", "SV_paper_comparable"}
     for train_strategy in STRATEGIES:
         for test_strategy in STRATEGIES:
             stats = results["SV"][(train_strategy, test_strategy)]
@@ -831,7 +984,7 @@ def test_run_experiment_tidyvoicex_end_to_end_skips_sc_and_uses_trial_list_eval(
     corpus = _make_tidyvoicex_corpus(tmp_path)
     results = run_experiment(config, corpus=corpus)
 
-    assert set(results.keys()) == {"SV", "SV_paper_comparable"}
+    assert set(results.keys()) == {"SV", "SV_minDCF", "SV_paper_comparable"}
     for train_strategy in STRATEGIES:
         for test_strategy in STRATEGIES:
             stats = results["SV"][(train_strategy, test_strategy)]

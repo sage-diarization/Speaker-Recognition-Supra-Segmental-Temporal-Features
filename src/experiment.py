@@ -23,6 +23,7 @@ from .data.dataset import (
 )
 from .data.features import vtlp_warp
 from .data.lazy_features import LazyFeatures, expected_frame_count
+from .data.segments import DRAW_STRATEGIES
 from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
 from .data.voxceleb import VoxCelebCorpus
@@ -30,9 +31,12 @@ from .device import resolve_device
 from .evaluation.clustering import best_misclassification_rate
 from .evaluation.verification import (
     IndexedTrials,
+    all_pairs_min_dcf,
     equal_error_rate,
     indexed_trial_equal_error_rate,
+    indexed_trial_min_dcf,
     trial_list_equal_error_rate,
+    trial_list_min_dcf,
 )
 from .models.losses import build_loss
 from .models.registry import build_model
@@ -291,6 +295,39 @@ def _holdout_dev_trials(dev_utterances, segment_length):
     return utterances, trials
 
 
+def _block_frames(strategy, segment_length):
+    """Frames per shuffled block of a test strategy: 1 for SS, b for BS{b},
+    the whole segment for OS (nothing shuffled). None for strategies that
+    aren't block shuffles (SU, mixtures)."""
+    if strategy == "OS":
+        return segment_length
+    if strategy == "SS":
+        return 1
+    if strategy.startswith("BS"):
+        return int(strategy[2:])
+    return None
+
+
+def _log_eer_by_block(run, key, eers_by_strategy, segment_length, transformation, title):
+    """Line chart of SV EER [%] over the signal one shuffled block spans,
+    (b - 1) * frame step + frame length, for the block-shuffle test strategies
+    (see _block_frames). eers_by_strategy maps each test strategy to one EER
+    per series, e.g. {"OS": {"run0": 0.1, "mean": 0.1}, ...}."""
+    points = sorted(
+        [
+            (_block_frames(strategy, segment_length), eers)
+            for strategy, eers in eers_by_strategy.items()
+            if _block_frames(strategy, segment_length) is not None
+        ],
+        key=lambda point: point[0],
+    )
+    if len(points) < 2:
+        return
+    block_ms = [round(((frames - 1) * transformation.frame_step_s + transformation.frame_length_s) * 1000) for frames, _ in points]
+    series = {name: [eers[name] * 100 for _, eers in points] for name in points[0][1]}
+    tracking.log_line_series(run, key, block_ms, series, title, xname="signal spanned by one shuffled block [ms]")
+
+
 def _sweep_key(config, train_strategy):
     run_postfix = ""
     if config.wandb.run_postfix:
@@ -332,13 +369,19 @@ def _save_manifest(path, manifest):
 
 
 def run_experiment(config, corpus=None, strategies=None):
-    """strategies restricts which of STRATEGIES to train/evaluate (default:
-    all three) -- lets a caller split the 3 strategies across separate
-    processes/GPUs, since each is already independently checkpointed,
-    manifested, and wandb-tracked (see _sweep_dir, _manifest_path,
-    tracking.start_run), so running a subset here never races with another
-    process running a different subset against the same config."""
-    strategies = strategies or STRATEGIES
+    """strategies restricts which of config.training.strategies to
+    train/evaluate (default: all of them) -- lets a caller split the
+    strategies across separate processes/GPUs, since each is already
+    independently checkpointed, manifested, and wandb-tracked (see
+    _sweep_dir, _manifest_path, tracking.start_run), so running a subset
+    here never races with another process running a different subset
+    against the same config. Every trained model is evaluated under each of
+    config.evaluation.test_strategies."""
+    strategies = strategies or config.training.strategies
+    test_strategies = config.evaluation.test_strategies
+    unknown = [s for s in (*strategies, *test_strategies) if s not in DRAW_STRATEGIES]
+    if unknown:
+        raise ValueError(f"unknown draw strategies {unknown}, expected some of {list(DRAW_STRATEGIES)}")
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
 
@@ -375,6 +418,9 @@ def run_experiment(config, corpus=None, strategies=None):
         def sv_eval_fn(embeddings, utterance_ids):
             return trial_list_equal_error_rate(embeddings, utterance_ids, corpus.trial_pairs)
 
+        def sv_min_dcf_fn(embeddings, utterance_ids):
+            return trial_list_min_dcf(embeddings, utterance_ids, corpus.trial_pairs)
+
         # train()'s periodic dev-eval must also use the trial-list function --
         # plain equal_error_rate would be nonsensical here (utterance_ids are
         # unique per-utterance path strings, not speaker ids, so every pair
@@ -401,6 +447,9 @@ def run_experiment(config, corpus=None, strategies=None):
         def sv_eval_fn(embeddings, utterance_ids):
             return indexed_trial_equal_error_rate(embeddings, utterance_ids, eval_trials)
 
+        def sv_min_dcf_fn(embeddings, utterance_ids):
+            return indexed_trial_min_dcf(embeddings, utterance_ids, eval_trials)
+
         def dev_eval_fn(embeddings, utterance_ids):
             return indexed_trial_equal_error_rate(embeddings, utterance_ids, dev_trials)
     else:
@@ -422,12 +471,13 @@ def run_experiment(config, corpus=None, strategies=None):
             corpus, "TEST", transformation, config.evaluation.sc_num_speakers, config.evaluation.sc_speakers
         )
         sv_eval_fn = equal_error_rate
+        sv_min_dcf_fn = all_pairs_min_dcf
         # train()'s own default (trainer.py's equal_error_rate) is exactly
         # this same function -- no need to route dev-eval through this
         # module's reference for TIMIT.
         dev_eval_fn = None
 
-    results = {"SV": {}, "SV_paper_comparable": {}}
+    results = {"SV": {}, "SV_minDCF": {}, "SV_paper_comparable": {}}
     if sc_utterances is not None:
         results["SC"] = {}
 
@@ -458,29 +508,65 @@ def run_experiment(config, corpus=None, strategies=None):
         # recorded in the manifest (a prior invocation completed them before
         # a crash/requeue) contribute their persisted values here instead of
         # being retrained, so the aggregate is identical to an uninterrupted run.
-        raw_sv = {test_strategy: [] for test_strategy in STRATEGIES}
-        raw_sc = {test_strategy: [] for test_strategy in STRATEGIES} if sc_utterances is not None else None
+        raw_sv = {test_strategy: [] for test_strategy in test_strategies}
+        raw_sv_min_dcf = {test_strategy: [] for test_strategy in test_strategies}
+        raw_sc = {test_strategy: [] for test_strategy in test_strategies} if sc_utterances is not None else None
         # Best dev EER over only the 11 epochs Neururer et al. 2024's checkpoint
         # selection actually searches (see trainer.train's paper_comparable_best) --
         # one value per run (not per test_strategy: dev eval during training only
         # ever uses draw_strategy=train_strategy). Older manifests predate this
         # field, hence the .get.
         raw_sv_paper_comparable = []
-        for completed_record in manifest["completed"].values():
-            for test_strategy in STRATEGIES:
+        # Run index of each entry in the raw_* lists above.
+        raw_run_indices = []
+        # Completed runs trained for fewer epochs than configured now continue
+        # from their kept latest checkpoint (training.keep_checkpoints) and
+        # are evaluated again. Their best checkpoint is then selected over all
+        # epochs evaluated in either phase. Records predating "num_epochs"
+        # count as fully trained.
+        continued = set()
+        for run_idx, completed_record in manifest["completed"].items():
+            trained_epochs = completed_record.get("num_epochs", config.training.num_epochs)
+            if trained_epochs < config.training.num_epochs:
+                if not _checkpoint_path(config, train_strategy, run_idx).exists():
+                    raise ValueError(
+                        f"run {run_idx} in {manifest_path} trained {trained_epochs} of {config.training.num_epochs} "
+                        "epochs, but its checkpoint is gone (set training.keep_checkpoints to keep it), so it can't "
+                        "be continued"
+                    )
+                continued.add(run_idx)
+        for run_idx, completed_record in manifest["completed"].items():
+            if run_idx in continued:
+                continue
+            missing = [t for t in test_strategies if t not in completed_record["sv"]]
+            if missing:
+                # The run's checkpoints are gone, so it can't be re-evaluated.
+                raise ValueError(
+                    f"{manifest_path} has completed runs never evaluated under {missing}; "
+                    "set a different wandb.run_postfix to train a fresh sweep"
+                )
+            for test_strategy in test_strategies:
                 raw_sv[test_strategy].append(completed_record["sv"][test_strategy])
+                # Older manifests predate minDCF.
+                if test_strategy in completed_record.get("sv_min_dcf", {}):
+                    raw_sv_min_dcf[test_strategy].append(completed_record["sv_min_dcf"][test_strategy])
                 if raw_sc is not None:
                     raw_sc[test_strategy].append(completed_record["sc"][test_strategy])
             if completed_record.get("sv_paper_comparable") is not None:
                 raw_sv_paper_comparable.append(completed_record["sv_paper_comparable"])
+            raw_run_indices.append(run_idx)
 
         for run_idx in range(config.num_runs):
-            if run_idx in manifest["completed"]:
+            if run_idx in manifest["completed"] and run_idx not in continued:
                 continue
+            if run_idx in continued:
+                print(f"==> Continuing run {run_idx} to {config.training.num_epochs} epochs", flush=True)
 
             train_segment_length = config.data.train_segment_length(transformation, config.training.playback_speed)
             augment_fn = None
             if config.training.vtlp_alpha_range:
+                if transformation.normalization != "frame":
+                    raise ValueError("vtlp_alpha_range needs transformation.normalization 'frame' (see vtlp_warp)")
                 augment_fn = functools.partial(
                     _vtlp_augment, alpha_range=config.training.vtlp_alpha_range, transformation=transformation
                 )
@@ -509,7 +595,9 @@ def run_experiment(config, corpus=None, strategies=None):
             # summary reports this single run's numbers as percentages, matching
             # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
             summary = {}
-            record = {"sv": {}, "sc": {}} if sc_utterances is not None else {"sv": {}}
+            record = {"sv": {}, "sv_min_dcf": {}, "num_epochs": config.training.num_epochs}
+            if sc_utterances is not None:
+                record["sc"] = {}
             record["sv_paper_comparable"] = paper_comparable_best
             if paper_comparable_best is not None:
                 raw_sv_paper_comparable.append(paper_comparable_best)
@@ -521,22 +609,26 @@ def run_experiment(config, corpus=None, strategies=None):
             print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
             sv_by_strategy = extract_embeddings_by_strategy(
                 model, sv_eval_utterances, segment_length,
-                {test_strategy: np.random.default_rng(run_idx) for test_strategy in STRATEGIES},
+                {test_strategy: np.random.default_rng(run_idx) for test_strategy in test_strategies},
                 device=config.device, num_workers=config.training.num_workers, log_every=10_000,
             )
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
                 sc_by_strategy = extract_embeddings_by_strategy(
                     model, sc_utterances, segment_length,
-                    {test_strategy: np.random.default_rng(run_idx) for test_strategy in STRATEGIES},
+                    {test_strategy: np.random.default_rng(run_idx) for test_strategy in test_strategies},
                     device=config.device, num_workers=config.training.num_workers,
                 )
-            for test_strategy in STRATEGIES:
+            for test_strategy in test_strategies:
                 sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
                 eer = sv_eval_fn(sv_embeddings, sv_labels)
                 raw_sv[test_strategy].append(eer)
                 record["sv"][test_strategy] = eer
                 summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
+                dcf = sv_min_dcf_fn(sv_embeddings, sv_labels)
+                raw_sv_min_dcf[test_strategy].append(dcf)
+                record["sv_min_dcf"][test_strategy] = dcf
+                summary[f"run{run_idx}/final/SV_minDCF_test-{test_strategy}"] = dcf
 
                 if sc_utterances is not None:
                     sc_embeddings, sc_labels = sc_by_strategy[test_strategy]
@@ -546,26 +638,37 @@ def run_experiment(config, corpus=None, strategies=None):
                     summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
 
             tracking.log_summary(run, summary)
+            _log_eer_by_block(
+                run, f"final/SV_EER_by_block/run{run_idx}",
+                {test_strategy: {f"run{run_idx}": eer} for test_strategy, eer in record["sv"].items()},
+                segment_length, transformation, f"SV EER [%] by shuffled block span, run {run_idx}",
+            )
+
+            raw_run_indices.append(run_idx)
 
             # Persisted before deleting the checkpoint: this run_idx is now
             # durably done, so a crash from here on skips straight past it.
             manifest["completed"][run_idx] = record
             _save_manifest(manifest_path, manifest)
-            if checkpoint_path.exists():
-                checkpoint_path.unlink()
-            best_path = best_checkpoint_path(checkpoint_path)
-            if best_path.exists():
-                best_path.unlink()
+            if not config.training.keep_checkpoints:
+                for path in (checkpoint_path, best_checkpoint_path(checkpoint_path)):
+                    if path.exists():
+                        path.unlink()
 
         # Once all of this strategy's runs are accounted for (freshly run or
         # already in the manifest), log the mean/SD over config.num_runs runs
         # to this same run's summary (Neururer et al. 2024 Section 2.3).
         aggregate_summary = {}
-        for test_strategy in STRATEGIES:
+        for test_strategy in test_strategies:
             sv_stats = _run_statistics(raw_sv[test_strategy])
             results["SV"][(train_strategy, test_strategy)] = sv_stats
             aggregate_summary[f"final/SV_EER_test-{test_strategy}_mean"] = sv_stats.mean * 100
             aggregate_summary[f"final/SV_EER_test-{test_strategy}_std"] = sv_stats.std * 100
+            if raw_sv_min_dcf[test_strategy]:
+                dcf_stats = _run_statistics(raw_sv_min_dcf[test_strategy])
+                results["SV_minDCF"][(train_strategy, test_strategy)] = dcf_stats
+                aggregate_summary[f"final/SV_minDCF_test-{test_strategy}_mean"] = dcf_stats.mean
+                aggregate_summary[f"final/SV_minDCF_test-{test_strategy}_std"] = dcf_stats.std
 
             if raw_sc is not None:
                 sc_stats = _run_statistics(raw_sc[test_strategy])
@@ -578,6 +681,17 @@ def run_experiment(config, corpus=None, strategies=None):
             aggregate_summary["final/SV_EER_paper_comparable_mean"] = paper_stats.mean * 100
             aggregate_summary["final/SV_EER_paper_comparable_std"] = paper_stats.std * 100
         tracking.log_summary(run, aggregate_summary)
+        _log_eer_by_block(
+            run, "final/SV_EER_by_block",
+            {
+                test_strategy: {
+                    **{f"run{i}": eer for i, eer in zip(raw_run_indices, raw_sv[test_strategy])},
+                    "mean": statistics.fmean(raw_sv[test_strategy]),
+                }
+                for test_strategy in test_strategies
+            },
+            segment_length, transformation, f"SV EER [%] by shuffled block span, {train_strategy}-trained",
+        )
         tracking.finish(run)
 
     return results
@@ -588,21 +702,23 @@ def format_results(results):
     runs, as percentages), matching Tables 1/2 in Neururer et al. 2024;
     `results` itself stores RunStatistics of raw [0, 1] fractions. "SC" is
     absent for VoxCeleb runs (Neururer et al. 2024 omits the SC task there),
-    so only tasks actually present in `results` are reported."""
+    so only tasks actually present in `results` are reported. minDCF is
+    already normalized and is reported unscaled."""
     lines = []
-    for task in ("SV", "SC"):
-        if task not in results:
+    for task, heading, scale in (("SV", "SV (EER) [%]", 100), ("SV_minDCF", "SV (minDCF)", 1), ("SC", "SC (MR) [%]", 100)):
+        if not results.get(task):
             continue
         # Only trained strategies have rows -- a --strategy-restricted run
         # (see run_experiment) leaves the others absent from results[task].
-        trained_strategies = [s for s in STRATEGIES if any((s, t) in results[task] for t in STRATEGIES)]
-        lines.append(f"{task} ({'EER' if task == 'SV' else 'MR'}) [%]:")
-        lines.append("train\\test  " + "  ".join(f"{s:>14}" for s in STRATEGIES))
+        trained_strategies = list(dict.fromkeys(s for s, _ in results[task]))
+        test_strategies = list(dict.fromkeys(t for _, t in results[task]))
+        lines.append(f"{heading}:")
+        lines.append("train\\test  " + "  ".join(f"{s:>14}" for s in test_strategies))
         for train_strategy in trained_strategies:
             row = []
-            for test_strategy in STRATEGIES:
+            for test_strategy in test_strategies:
                 stats = results[task][(train_strategy, test_strategy)]
-                row.append(f"{stats.mean * 100:6.2f} σ{stats.std * 100:5.2f}")
+                row.append(f"{stats.mean * scale:6.2f} σ{stats.std * scale:5.2f}")
             lines.append(f"{train_strategy:<11} " + "  ".join(row))
         lines.append("")
 
@@ -626,9 +742,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="path to a YAML experiment config")
     parser.add_argument(
-        "--strategy", choices=STRATEGIES, default=None,
-        help="restrict this invocation to a single train_strategy (default: run all %s), "
-             "so multiple invocations can run concurrently on different GPUs against the same config" % (STRATEGIES,),
+        "--strategy", choices=list(DRAW_STRATEGIES), default=None,
+        help="restrict this invocation to a single train_strategy (default: all of the config's "
+             "training.strategies), so multiple invocations can run concurrently on different GPUs "
+             "against the same config",
     )
     args = parser.parse_args()
 

@@ -239,3 +239,39 @@ def test_chunked_cross_utterance_batches_match_per_utterance_forward_passes(monk
         np.testing.assert_allclose(embeddings, _per_utterance_reference(model, utterances, segment_length, strategy, seed=4),
                                    rtol=1e-4, atol=1e-5)
         assert list(labels) == ["utt0", "utt2", "utt3", "utt4", "utt5", "utt6", "utt7"]
+
+
+def test_eval_windows_block_shuffle_keeps_window_frames_and_block_order():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(100 * 3, dtype=np.float32).reshape(100, 3)
+    windows = _eval_windows(features, 40, 20, 4, "BS8", np.random.default_rng(0))
+    for i, window in enumerate(windows):
+        expected = features[i * 20:i * 20 + 40]
+        np.testing.assert_array_equal(np.sort(window[:, 0]), expected[:, 0])
+        assert not np.array_equal(window, expected)
+        for st in range(0, 40, 8):
+            assert np.all(np.diff(window[st:st + 8, 0]) == 3)  # 8-frame blocks stay intact
+
+
+def test_eval_windows_mix_leaves_some_windows_ordered_and_shuffles_others():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(400 * 3, dtype=np.float32).reshape(400, 3)
+    windows = _eval_windows(features, 20, 10, 39, "MIX", np.random.default_rng(0))
+    ordered = [np.all(np.diff(w[:, 0]) == 3) for w in windows]
+    assert 0 < sum(ordered) < len(windows)
+
+
+def test_permutation_sensitivity_is_zero_for_an_order_invariant_model():
+    from src.evaluation.temporal_probes import permutation_sensitivity
+    from src.models.conformer import ConformerBackend
+
+    model = ConformerBackend(20, 16, 2, 2, 2, conv_kernel_size=1, dropout=0.1,
+                             use_relative_positional_encoding=False, subsampling_time_kernel=1,
+                             subsampling_time_stride=1)
+    rng = np.random.default_rng(0)
+    utterances = [(rng.normal(size=(60, 20)).astype(np.float32), i) for i in range(3)]
+    sensitivity = permutation_sensitivity(model, utterances, 20, ["SS", "BS4"])
+    assert set(sensitivity) == {"SS", "BS4"}
+    assert all(abs(value) < 1e-5 for value in sensitivity.values())

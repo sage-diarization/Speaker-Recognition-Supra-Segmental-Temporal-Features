@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import torch
 
@@ -95,3 +96,48 @@ def test_build_conformer_reads_hyperparameters_from_config():
     out = model(torch.randn(2, 1, 32, 20))
     assert out.backend.shape == (2, 1024)
     assert out.bottleneck.shape == (2, 512)
+
+
+def test_without_temporal_context_the_backend_ignores_frame_order():
+    model = _tiny_model(conv_kernel_size=1, use_relative_positional_encoding=False, subsampling_time_kernel=1,
+                         subsampling_time_stride=1)
+    model.eval()
+    x = torch.randn(2, 1, 32, 20)
+    shuffled = x[:, :, torch.randperm(32)]
+    torch.testing.assert_close(model(shuffled).backend, model(x).backend, rtol=1e-4, atol=1e-5)
+
+
+def test_default_backend_depends_on_frame_order():
+    model = _tiny_model()
+    model.eval()
+    x = torch.randn(2, 1, 32, 20)
+    assert not torch.allclose(model(x[:, :, torch.randperm(32)]).backend, model(x).backend, atol=1e-5)
+
+
+def test_build_conformer_passes_subsampling_time_kernel_and_stride():
+    config = ExperimentConfig()
+    config.conformer.subsampling_time_kernel = 5
+    config.conformer.subsampling_time_stride = 1
+    conv = build_conformer(config).subsampling.conv[0]
+    assert (conv.kernel_size, conv.stride, conv.padding) == ((5, 3), (1, 2), (2, 1))
+
+
+@pytest.mark.parametrize("time_kernel, time_stride, expected_steps", [(3, 2, 8), (1, 2, 8), (3, 1, 32), (1, 1, 32)])
+def test_subsampling_time_stride_sets_the_encoder_length(time_kernel, time_stride, expected_steps):
+    model = _tiny_model(subsampling_time_kernel=time_kernel, subsampling_time_stride=time_stride)
+    assert model.subsampling(torch.randn(2, 1, 32, 20)).shape == (2, expected_steps, 16)
+
+
+def test_even_subsampling_time_kernel_is_rejected():
+    with pytest.raises(ValueError):
+        _tiny_model(subsampling_time_kernel=2)
+
+
+def test_attention_distances_has_one_value_per_layer_and_head():
+    from src.evaluation.temporal_probes import attention_distances
+
+    model = _tiny_model()
+    distances = attention_distances(model, torch.randn(2, 1, 32, 20), step_ms=40)
+    assert distances.shape == (2, 2)
+    # 8 encoder steps: offsets range 0..7 steps.
+    assert np.all((distances >= 0) & (distances <= 7 * 40))

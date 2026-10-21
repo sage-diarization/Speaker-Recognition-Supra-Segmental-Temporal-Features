@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 
 from .. import tracking
 from ..data.lazy_features import resolve_features
+from ..data.segments import MIXTURES, shuffle_blocks
 from ..evaluation.verification import equal_error_rate
 
 
@@ -472,7 +473,12 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     distinction barely matters for single-sentence SV test utterances but is
     the dominant source of the SC misclassification-rate gap against
     Neururer et al. 2024's Table 1, since SC test utterances are much
-    longer (2-8 concatenated sentences)."""
+    longer (2-8 concatenated sentences).
+
+    BS{b} walks the same sequential windows as OS/SS and permutes each
+    window's b-frame blocks fresh (see src/data/segments.py::draw_bs); a
+    mixture (MIX, RANDBS, see src/data/segments.py's MIXTURES) treats each
+    window by one of its strategies, picked at random per window."""
     if draw_strategy == "SU":
         length = features.shape[0]
         return [features[rng.integers(0, length, segment_length)] for _ in range(num_windows)]
@@ -480,8 +486,13 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     for i in range(num_windows):
         start = i * step
         segment = features[start:start + segment_length].copy()
-        if draw_strategy == "SS":
+        strategy = draw_strategy
+        if strategy in MIXTURES:
+            strategy = MIXTURES[strategy][rng.integers(len(MIXTURES[strategy]))]
+        if strategy == "SS":
             rng.shuffle(segment)
+        elif strategy.startswith("BS"):
+            segment = shuffle_blocks(segment, int(strategy[2:]), rng)
         segments.append(segment)
     return segments
 

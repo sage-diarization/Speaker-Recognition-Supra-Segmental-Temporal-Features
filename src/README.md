@@ -114,6 +114,57 @@ finished repeats instead of retraining them.
 - **OS** (Original Segment): a contiguous crop — has both FBA and SST.
 - **SS** (Shuffled within Segment): the OS crop with frame order destroyed.
 - **SU** (Shuffled within Utterance): frames drawn from a wider window.
+- **BS{b}** (Block-Shuffled, b ∈ 2, 4, 8, 16, 32, 64 frames): the OS crop
+  with the order of its b-frame blocks destroyed, but the frame order inside
+  each block kept — removes only temporal structure longer than b frames.
+- **MIX**: OS or SS with equal probability, so that one model is in
+  distribution for both ordered and shuffled input.
+
+`training.strategies` and `evaluation.test_strategies` choose which of these a
+model is trained and evaluated under (default: OS, SS, SU for both). SV
+reports minDCF (p_target = 0.01) next to EER.
+
+### Temporal study (Conformer), stage 1
+
+Stage 1 establishes whether, and how far, the Conformer uses temporal order
+on VoxCeleb. Unlike the paper's protocol, it uses 2 s segments and
+per-segment band-mean normalization (`transformation.normalization:
+"segment"`), which keeps the energy contour that the per-frame z-score
+removes. There are three models:
+
+| Model | Config | `--strategy` | Role |
+|---|---|---|---|
+| A | `conformer-voxceleb-stage1.yaml` | `OS` | reference |
+| B | `conformer-voxceleb-stage1.yaml` | `RANDBS` | in distribution for every tested block size |
+| C | `conformer-voxceleb-stage1-invariant.yaml` | `OS` | invariant to frame order: the order-free floor |
+
+Model B trains on OS, SS, BS8, BS16, BS32 and BS64, chosen at random per segment.
+Model C has no positional encoding (`use_relative_positional_encoding:
+false`), a depthwise kernel of 1 (`conv_kernel_size: 1`), and subsampling
+with time kernel and stride 1 (`subsampling_time_kernel`/`_stride`).
+
+All three are tested under OS, SS, BS8, BS16, BS32 and BS64. With 64 ms
+windows every 10 ms, these blocks span 64, 134, 214, 374 and 694 ms of
+signal: from about one phone to syllable and prosodic scale. Order inside a
+64 ms frame is already lost in the magnitude spectrum, so this front-end
+cannot test whether the model uses sub-phone order.
+
+- EER(C) − EER(A) on OS is the total benefit of temporal order.
+- B's EER across block sizes shows at which time scale that benefit lives,
+  without train/test shift.
+
+The runs train for 64 epochs and evaluate dev EER after every epoch
+(`paper_checkpoint_epochs: false`), so every epoch is a best-checkpoint
+candidate. They keep their checkpoints (`training.keep_checkpoints`): the
+latest training state and the best weights.
+
+- Raising `num_epochs` and re-running the job continues completed runs from
+  their latest state. Because every epoch is a candidate, a continued run
+  selects its best checkpoint exactly like a fresh run of that length.
+- `doc/temporal-probes.ipynb` uses the best weights. Its probes need no
+  trials: it measures embedding distance under block shuffling, and the
+  attention distance per layer and head.
+The SLURM jobs are `slurm/conformer-voxceleb-stage1-{os,randbs,invariant}.submit`.
 
 ## Getting TIMIT
 
@@ -280,6 +331,7 @@ python -m src.experiment --config configs/resnet-voxceleb.yaml   # ResNet backen
 python -m src.experiment --config configs/fresnet-voxceleb.yaml   # F-ResNet backend on VoxCeleb
 python -m src.experiment --config configs/conformer-voxceleb.yaml   # Conformer backend on VoxCeleb
 python -m src.experiment --config configs/w2vbert-voxceleb.yaml     # frozen w2v-BERT 2.0 on VoxCeleb
+python -m src.experiment --config configs/conformer-voxceleb-stage1.yaml --strategy OS  # temporal study, stage 1 (see above)
 ```
 
 `device: "auto"` (the default, see `configs/cnn_timit.yaml`) picks the best
