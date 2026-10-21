@@ -27,7 +27,7 @@ df_repro = pd.read_csv('reproduction/speaker-verification.csv')
 df_paper = pd.read_csv('paper/speaker-verification.csv')
 
 # Default configurations
-DEFAULT_ARCHS = ['CNN', 'CNN-VTLP', 'RNN', 'ResNet', 'F-ResNet', 'Conformer', 'Conformer-NoPE', 'W2V-Bert']
+DEFAULT_ARCHS = ['CNN', 'CNN-VTLP', 'RNN', 'ResNet', 'F-ResNet', 'Conformer', 'Conformer-NoPE', 'Conformer-NoPE-K1', 'W2V-Bert']
 DEFAULT_COLORMAP = {'OS': '#1f77b4', 'SS': '#ff7f0e', 'SU': '#2ca02c'}
 DEFAULT_GREEN = '#2ca02c'
 

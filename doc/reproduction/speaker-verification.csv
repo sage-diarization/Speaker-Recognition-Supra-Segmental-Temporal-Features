@@ -71,3 +71,6 @@ e07mcdyj,CNN-timit-OS-vtlp/final,timit,CNN-VTLP,OS,SU,12.076773320238756,1.28578
 e07mcdyj,CNN-timit-SS-vtlp/final,timit,CNN-VTLP,SS,OS,8.24987264098259,0.6163436815225248
 e07mcdyj,CNN-timit-SS-vtlp/final,timit,CNN-VTLP,SS,SS,5.483540618913905,0.1948016985421794
 e07mcdyj,CNN-timit-SS-vtlp/final,timit,CNN-VTLP,SS,SU,5.552910052910049,0.11047943395672334
+z8bf774v,Conformer-voxceleb-OS-NoPE-K1/estimate,voxceleb,Conformer-NoPE-K1,OS,OS,12.640610589568556,0.0
+z8bf774v,Conformer-voxceleb-OS-NoPE-K1/estimate,voxceleb,Conformer-NoPE-K1,OS,SS,37.697435785709,0.0
+z8bf774v,Conformer-voxceleb-OS-NoPE-K1/estimate,voxceleb,Conformer-NoPE-K1,OS,SU,38.91385468695959,0.0
