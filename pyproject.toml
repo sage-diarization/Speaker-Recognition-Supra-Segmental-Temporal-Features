@@ -15,6 +15,7 @@ dependencies = [
     "wandb",
     "transformers",
     "pytest",
+    "plotly"
 ]
 
 [tool.uv]

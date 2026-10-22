@@ -135,6 +135,11 @@ jupyter/
 
 .idea
 
+# Use uv: pyproject.toml is source of truth.
+# if you need requirements.txt its a build artifact and should be compiled with:
+# uv pip compile pyproject.toml -o requirements.txt 
+requirements*.txt
+
 # HPC
 logs/
 
