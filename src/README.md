@@ -166,6 +166,19 @@ latest training state and the best weights.
   attention distance per layer and head.
 The SLURM jobs are `slurm/conformer-voxceleb-stage1-{os,randbs,invariant}.submit`.
 
+### Temporal study (Conformer), stage 2
+
+Stage 1 found the benefit of temporal order below about 134 ms of signal.
+Stage 2 tests whether a stronger model uses longer time scales: it repeats
+stage 1's three models (`conformer-voxceleb-stage2.yaml` and
+`conformer-voxceleb-stage2-invariant.yaml`) with the paper's Conformer(M)
+(`encoder_dim: 256`, `num_layers: 16`) instead of a 4-layer Conformer(S), for
+the paper's 128 epochs. Everything else is unchanged. For a comparison to
+count, model A's OS EER must improve on stage 1's by more than the spread
+between runs.
+
+The SLURM jobs are `slurm/conformer-voxceleb-stage2-{os,randbs,invariant}.submit`.
+
 ## Getting TIMIT
 
 TIMIT is an LDC-licensed corpus (catalog.ldc.upenn.edu/LDC93S1) — there is

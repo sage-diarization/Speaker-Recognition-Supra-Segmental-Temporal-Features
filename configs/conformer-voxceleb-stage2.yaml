@@ -1,0 +1,77 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 3                # as stage 1, so the two stages compare like for like
+
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 2.0    # 188 frames: even 64-frame blocks leave 3 to permute, and test windows span 2 s
+
+# Per-segment band-mean normalization instead of context/src's per-frame
+# z-score, which deletes the energy contour (see TransformationConfig).
+transformation:
+  normalization: "segment"
+
+# Neururer et al. 2024's protocol (Section 3.2, context/src's
+# 04_evaluation/VOX-00_ORIGINAL.json): train on VoxCeleb2 dev, select
+# checkpoints on VoxCeleb1-O (cleaned), report SV on VoxCeleb1-H (cleaned).
+# Remove vox2_root and eval_trial_meta_url for the VoxCeleb1-only substitute
+# (see src/README.md's "Running on VoxCeleb").
+voxceleb:
+  root: "~/.cache/datasets/voxceleb1"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  vox2_root: "~/.cache/datasets/voxceleb2"   # VoxCeleb2 dev as 16 kHz WAV, downloaded + converted manually
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"          # checkpoint selection
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
+
+model:
+  type: "Conformer"
+
+conformer:
+  # Gulati et al. 2020 Conformer(M) (Table 1): stage 1's 4-layer Conformer(S)
+  # scaled up, to test whether a stronger model uses longer time scales.
+  encoder_dim: 256
+  num_layers: 16
+  num_heads: 4
+  ff_expansion_factor: 4
+  conv_kernel_size: 31     # must be odd; paper's Table 1 rounds this to 32
+  dropout: 0.1
+  use_relative_positional_encoding: true
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  # OS: the reference model. RANDBS: one model in distribution for OS, SS and
+  # BS8/16/32/64, so its test-time OS-vs-BS gaps are free of train/test shift.
+  strategies: [OS, RANDBS]
+  # Best weights for doc/temporal-probes.ipynb; latest state to continue
+  # these runs by raising num_epochs.
+  keep_checkpoints: true
+  num_epochs: 128          # the paper's 128
+  batch_size: 100
+  # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
+  # nodes) -- /scratch is wiped at job termination, so it can't hold resume
+  # state across a requeue.
+  checkpoint_every_epochs: 1
+  # All num_epochs epochs (no early stopping). Unlike the paper, dev EER is
+  # computed every epoch and every epoch is a best-checkpoint candidate: this
+  # gives full convergence curves, and a run continued to more epochs selects
+  # exactly like a fresh one. The paper's best-of-11 is still logged
+  # (SV_EER_paper_comparable).
+  paper_checkpoint_epochs: false
+  # Training segments are read from disk per draw -- match the SLURM jobs'
+  # --cpus-per-task.
+  num_workers: 32
+  compile: true            # CUDA graphs, see TrainingConfig.compile
+
+evaluation:
+  # Blocks of 1/8/16/32/64 frames span 64/134/214/374/694 ms of signal (64 ms
+  # windows, 10 ms hop): from about one phone to syllable and prosodic scale.
+  # Order inside a 64 ms frame is lost already, so sub-phone use is untestable.
+  test_strategies: [OS, SS, BS8, BS16, BS32, BS64]
+
+wandb:
+  run_postfix: Stage2
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []
