@@ -67,7 +67,9 @@ evaluation:
   # Blocks of 1/8/16/32/64 frames span 64/134/214/374/694 ms of signal (64 ms
   # windows, 10 ms hop): from about one phone to syllable and prosodic scale.
   # Order inside a 64 ms frame is lost already, so sub-phone use is untestable.
-  test_strategies: [OS, SS, BS8, BS16, BS32, BS64]
+  # GO{b}/GS{b}: the SST bracket (see src/experiment.py's sst_bracket). Completed
+  # runs are scored under them from their kept best checkpoints.
+  test_strategies: [OS, SS, BS8, BS16, BS32, BS64, GO8, GS8, GO16, GS16, GO32, GS32, GO64, GS64]
 
 wandb:
   run_postfix: Stage2-Invariant

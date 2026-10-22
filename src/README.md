@@ -179,6 +179,126 @@ between runs.
 
 The SLURM jobs are `slurm/conformer-voxceleb-stage2-{os,randbs,invariant}.submit`.
 
+### SST bracket (all architectures)
+
+The bracket estimates how much an OS-trained model's verification
+performance depends on temporal order above a time scale of b frames,
+i.e. on supra-segmental temporal information (SST). The quantity of
+interest is
+
+    T(b) = EER(OS → input with the order above b frames destroyed, and no
+           other change) − EER(OS)
+
+T(b) can't be measured directly: every way of destroying order also
+introduces artificial joins, where frames meet that were never adjacent
+(jumps in spectrum, F0 and energy), and a model can react to those even if
+it ignores order. The plain block shuffle (BS{b}) therefore measures order
+and join artefacts together. The bracket encloses T(b) between two
+measurable quantities: one that removes the join artefacts and leans low,
+and one that keeps them and leans high.
+
+#### Test strategies
+
+- **BS{b}** (block shuffle): an OS window cut into consecutive b-frame
+  blocks, the block order permuted, the frame order inside each block
+  kept.
+- **GO{b}** (gapped, ordered: the control C_b): k = ⌈segment / b⌉ blocks
+  of b frames, spread evenly over the whole utterance of N frames with gaps
+  of ⌊(N − segment) / k⌋ frames between them, and concatenated in their
+  original order. Every join splices two frames that were never adjacent,
+  but the order of the blocks is the original one.
+- **GS{b}** (gapped, shuffled: S_b): the same blocks as GO{b}, in random
+  order.
+
+GO{b} and GS{b} take the same blocks in every window
+(`src/training/trainer.py`'s `_eval_windows`), so they have the same
+content and the same joins and differ only in block order. The gap grows
+with the utterance length: as N approaches the segment length it shrinks
+to 0 and GO{b} becomes OS.
+
+#### Measures
+
+Per run and block size, `src/experiment.py`'s `sst_bracket` reports:
+
+| Measure | Formula | Unit |
+|---|---|---|
+| L(b) | EER(GS_b) − EER(GO_b) | EER %-points |
+| U(b) | EER(BS_b) − EER(OS) | EER %-points |
+| L_norm(b) | L(b) / (50% − EER(OS)) | % of headroom |
+| U_norm(b) | U(b) / (50% − EER(OS)) | % of headroom |
+
+**L(b), the lower estimate.** GO_b and GS_b contain the same joins, so the
+join artefacts cancel in their difference, and L(b) is the cost of the
+block order alone. It tends to underestimate T(b): the gaps already break
+all structure that spans a join, such as rhythm across neighbouring
+syllables or a pitch movement continuing into the next block. That
+structure is missing from GO_b as well, so its loss isn't counted. L(b)
+measures the use of the coarse order of the blocks (declination, phrase
+order and other slow trends), not of all order above b frames.
+
+**U(b), the upper estimate.** U(b) is the plain test-time shuffle cost. It
+contains all order information lost above b frames, plus the cost of the
+join artefacts, which isn't SST use. It tends to overestimate T(b).
+
+**The band.** Under two assumptions, L(b) ≤ T(b) ≤ U(b):
+
+1. join artefacts never improve verification (check: EER(GO_b) ≥
+   EER(OS) in the SV table), and
+2. their effect adds approximately to the effect of the lost order (it
+   doesn't interact strongly with it).
+
+Neither is guaranteed, so the band is an estimate, not a proof. Read it as
+follows:
+
+- L ≈ U ≈ 0: even the high estimate finds no SST use above b frames.
+- L ≈ 0 and U clearly > 0: the test can't distinguish SST use across the
+  joins from sensitivity to the artefacts. The width U − L bounds both
+  together.
+- L clearly > 0: the model uses the order of the blocks. The joins are
+  matched, so artefacts can't explain this.
+
+EER(GO_b) − EER(OS) is the cost of the joins and gaps alone (from the SV
+table), which shows how much of U(b) may be artefact.
+
+**The normalized band.** An EER difference means more for a model close
+to chance than for a strong one: a model at 45% EER can lose at most 5
+points. L_norm(b) and U_norm(b) divide both bounds by the OS model's
+headroom to chance, 50% − EER(OS): the share of that headroom the order
+above b frames is worth. Both use the same denominator, so dividing the
+inequality by it keeps it intact:
+
+    L(b) / (50% − EER(OS)) ≤ T(b) / (50% − EER(OS)) ≤ U(b) / (50% − EER(OS))
+
+This makes models with different baseline EERs comparable. Only the band
+with a common denominator brackets T(b): normalizing L(b) by GO's
+headroom instead (50% − EER(GO_b)) would scale it differently from U(b).
+
+Each measure is computed per run and then averaged over runs (mean/SD),
+not computed from mean EERs. The measures are printed and logged to wandb
+as `final/SST_{L,U,L_norm,U_norm}_b{b}_{mean,std}`.
+`doc/temporal-probes.ipynb`'s `permutation_sensitivity` also accepts
+GS{b}, which it compares against GO{b} instead of OS.
+
+All architectures use the Conformer stage 1 setup (VoxCeleb, 2 s segments,
+`normalization: "segment"`, 64 epochs, 3 runs), trained on OS only:
+
+| Model | Config | SLURM job |
+|---|---|---|
+| CNN | `cnn-voxceleb-sst.yaml` | `slurm/cnn-voxceleb-sst.submit` |
+| RNN | `rnn-voxceleb-sst.yaml` | `slurm/rnn-voxceleb-sst.submit` |
+| ResNet | `resnet-voxceleb-sst.yaml` | `slurm/resnet-voxceleb-sst.submit` |
+| F-ResNet | `fresnet-voxceleb-sst.yaml` | `slurm/fresnet-voxceleb-sst.submit` |
+| Conformer(S) / (M) | `conformer-voxceleb-stage{1,2}.yaml` | `slurm/conformer-voxceleb-stage{1,2}-os.submit` |
+
+The Conformer stage configs list GO{b}/GS{b} among their test strategies
+too. When a completed run lacks a test strategy and its best checkpoint was
+kept (`training.keep_checkpoints`), `run_experiment` scores it from that
+checkpoint instead of retraining. Each strategy's windows are drawn with
+their own generator seeded by the run index, so this gives the same result
+as testing all strategies at once. Re-submitting the stage jobs therefore
+only adds the new columns. The invariant models must give L(b) = 0, which
+makes them a sanity check.
+
 ## Getting TIMIT
 
 TIMIT is an LDC-licensed corpus (catalog.ldc.upenn.edu/LDC93S1) — there is

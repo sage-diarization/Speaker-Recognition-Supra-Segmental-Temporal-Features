@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from .. import tracking
 from ..data.lazy_features import resolve_features
-from ..data.segments import MIXTURES, shuffle_blocks
+from ..data.segments import MIXTURES, gapped_segment, shuffle_blocks
 from ..evaluation.verification import equal_error_rate
 
 
@@ -478,17 +478,30 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     BS{b} walks the same sequential windows as OS/SS and permutes each
     window's b-frame blocks fresh (see src/data/segments.py::draw_bs); a
     mixture (MIX, RANDBS, see src/data/segments.py's MIXTURES) treats each
-    window by one of its strategies, picked at random per window."""
+    window by one of its strategies, picked at random per window.
+
+    GO{b}/GS{b} windows instead spread their blocks over the whole utterance
+    (src/data/segments.py::gapped_segment), the num_windows windows at
+    evenly-spaced positions through its slack. The positions use no
+    randomness, so GO{b} and GS{b} take the same blocks in every window and
+    differ only in GS{b}'s block order."""
     if draw_strategy == "SU":
         length = features.shape[0]
         return [features[rng.integers(0, length, segment_length)] for _ in range(num_windows)]
     segments = []
     for i in range(num_windows):
-        start = i * step
-        segment = features[start:start + segment_length].copy()
         strategy = draw_strategy
         if strategy in MIXTURES:
             strategy = MIXTURES[strategy][rng.integers(len(MIXTURES[strategy]))]
+        if strategy.startswith(("GO", "GS")):
+            block_size = int(strategy[2:])
+            segment = gapped_segment(features, segment_length, block_size, i / max(num_windows - 1, 1))
+            if strategy.startswith("GS"):
+                segment = shuffle_blocks(segment, block_size, rng)
+            segments.append(segment)
+            continue
+        start = i * step
+        segment = features[start:start + segment_length].copy()
         if strategy == "SS":
             rng.shuffle(segment)
         elif strategy.startswith("BS"):

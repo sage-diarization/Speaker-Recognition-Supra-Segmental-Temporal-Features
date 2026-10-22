@@ -282,3 +282,37 @@ def test_permutation_sensitivity_is_zero_for_an_order_invariant_model():
     sensitivity = permutation_sensitivity(model, utterances, 20, ["SS", "BS4"])
     assert set(sensitivity) == {"SS", "BS4"}
     assert all(abs(value) < 1e-5 for value in sensitivity.values())
+
+
+def test_eval_windows_go_and_gs_take_the_same_blocks_per_window():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(200 * 3, dtype=np.float32).reshape(200, 3)
+    go = _eval_windows(features, 40, 20, 5, "GO8", np.random.default_rng(0))
+    gs = _eval_windows(features, 40, 20, 5, "GS8", np.random.default_rng(1))
+    assert len({window[0, 0] for window in go}) == 5  # windows move through the slack
+    for go_window, gs_window in zip(go, gs):
+        rows = go_window[:, 0] / 3
+        assert np.all(np.diff(rows) > 0)  # original order
+        assert np.diff(rows).max() > 1    # with gaps
+        assert not np.array_equal(go_window, gs_window)
+        blocks = lambda w: sorted(tuple(w[st:st + 8, 0]) for st in range(0, 40, 8))
+        assert blocks(go_window) == blocks(gs_window)
+
+
+class _FrameMeanModel(_MeanModel):
+    """Embeds a segment as its per-band mean over time: order-invariant, but
+    sensitive to which frames the segment holds."""
+
+    def __call__(self, x):
+        return BackendOutput(backend=x.mean(dim=(1, 2)), bottleneck=None)
+
+
+def test_permutation_sensitivity_compares_gs_against_its_go_control():
+    from src.evaluation.temporal_probes import permutation_sensitivity
+
+    rng = np.random.default_rng(0)
+    utterances = [(rng.normal(size=(80, 4)).astype(np.float32), i) for i in range(3)]
+    sensitivity = permutation_sensitivity(_FrameMeanModel(), utterances, 20, ["GS4", "GO4"])
+    assert abs(sensitivity["GS4"]) < 1e-6  # same frames as GO4, only reordered
+    assert sensitivity["GO4"] > 1e-3       # other frames than OS

@@ -63,6 +63,41 @@ def draw_bs(data, segment_length, rng=None, block_size=1):
     return shuffle_blocks(draw_os(data, segment_length, rng), block_size, rng)
 
 
+def gapped_segment(data, segment_length, block_size, position):
+    """The segment_length frames of ceil(segment_length / block_size)
+    consecutive block_size-frame blocks (the last one may be shorter), spread
+    evenly over the whole utterance and kept in their original order: equal
+    gaps of (length - segment_length) // blocks frames between them, so every
+    join splices two frames that were never adjacent. position in [0, 1]
+    shifts all blocks together through the slack the integer gap leaves
+    over. A gap of 0 (utterance of exactly segment_length frames) is OS."""
+    _validate(data, segment_length)
+    num_blocks = -(-segment_length // block_size)
+    gap = (data.shape[0] - segment_length) // num_blocks
+    slack = data.shape[0] - segment_length - (num_blocks - 1) * gap
+    start = round(position * slack)
+    return np.concatenate([
+        data[start + i * (block_size + gap):start + i * (block_size + gap) + min(block_size, segment_length - i * block_size)]
+        for i in range(num_blocks)
+    ])
+
+
+def draw_go(data, segment_length, rng=None, block_size=1):
+    """Gapped, Ordered blocks (the control C_b): gapped_segment at a random
+    position. Its joins are as artificial as GS's, but the block order is
+    the original one."""
+    rng = rng or np.random.default_rng()
+    return gapped_segment(data, segment_length, block_size, rng.random())
+
+
+def draw_gs(data, segment_length, rng=None, block_size=1):
+    """Gapped, Shuffled blocks (S_b): GO's blocks in random order. GS{b}
+    against GO{b} differs only in block order, with the same blocks and
+    joins."""
+    rng = rng or np.random.default_rng()
+    return shuffle_blocks(draw_go(data, segment_length, rng, block_size), block_size, rng)
+
+
 def draw_mixture(data, segment_length, rng=None, choices=()):
     """A segment drawn by one of the `choices` strategies, picked uniformly
     at random per draw, so that one model is trained on (and in distribution
@@ -87,5 +122,7 @@ DRAW_STRATEGIES = {
     "SS": draw_ss,
     "SU": draw_su,
     **{f"BS{b}": functools.partial(draw_bs, block_size=b) for b in BLOCK_SIZES},
+    **{f"GO{b}": functools.partial(draw_go, block_size=b) for b in BLOCK_SIZES},
+    **{f"GS{b}": functools.partial(draw_gs, block_size=b) for b in BLOCK_SIZES},
     **{name: functools.partial(draw_mixture, choices=choices) for name, choices in MIXTURES.items()},
 }

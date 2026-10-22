@@ -1033,3 +1033,47 @@ def test_vtlp_augment_draws_fresh_alpha_per_segment_reproducibly():
 
     draws(recording_augment)
     assert len(set(alphas)) == 2  # a fresh alpha for every drawn segment
+
+
+def test_sst_bracket_computes_both_estimates_raw_and_normalized_by_os_headroom():
+    eers = {"OS": 0.10, "BS16": 0.16, "GO16": 0.20, "GS16": 0.23}
+    measures = experiment_module.sst_bracket(eers, 16)
+    assert measures["L"] == pytest.approx(0.03)
+    assert measures["U"] == pytest.approx(0.06)
+    assert measures["L_norm"] == pytest.approx(0.03 / 0.40)
+    assert measures["U_norm"] == pytest.approx(0.06 / 0.40)
+    assert experiment_module.sst_bracket({"OS": 0.1, "BS16": 0.2}, 16).keys() == {"U", "U_norm"}
+    assert experiment_module.sst_bracket({"GO16": 0.2, "GS16": 0.3}, 16).keys() == {"L"}
+    assert experiment_module.sst_bracket(eers, 8) == {}
+
+
+def test_run_experiment_reports_sst_measures_per_block_size():
+    config = _continuation_config(1, keep_checkpoints=False)
+    config.evaluation.test_strategies = ["OS", "BS16", "GO16", "GS16", "GO32", "GS32"]
+
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+
+    sv = {test: results["SV"][("OS", test)].mean for test in config.evaluation.test_strategies}
+    assert set(results["SST_L_norm"]) == {("OS", "b16"), ("OS", "b32")}
+    assert set(results["SST_U"]) == {("OS", "b16")}
+    assert results["SST_L"][("OS", "b32")].mean == pytest.approx(sv["GS32"] - sv["GO32"])
+    assert results["SST_L_norm"][("OS", "b16")].mean == pytest.approx((sv["GS16"] - sv["GO16"]) / (0.5 - sv["OS"]))
+    report = format_results(results)
+    assert "normalized L(b)" in report and "train\\block" in report
+
+
+def test_run_experiment_evaluates_completed_runs_under_new_test_strategies_from_their_best_checkpoint(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    first = run_experiment(_continuation_config(2), corpus=corpus)
+
+    trained = []
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: trained.append(1))
+    config = _continuation_config(2)
+    config.evaluation.test_strategies = ["OS", "GO16", "GS16"]
+    results = run_experiment(config, corpus=corpus)
+
+    assert trained == []
+    assert results["SV"][("OS", "OS")].mean == first["SV"][("OS", "OS")].mean
+    manifest = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))
+    assert set(manifest["completed"][0]["sv"]) == {"OS", "GO16", "GS16"}
+    assert ("OS", "b16") in results["SST_L"]

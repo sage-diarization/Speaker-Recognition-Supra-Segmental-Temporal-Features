@@ -10,15 +10,17 @@ from .verification import cosine_similarity
 
 
 def permutation_sensitivity(model, utterances, segment_length, strategies, device="cpu", seed=0):
-    """Mean cosine distance 1 - cos(e_OS, e_S) between each utterance's OS
-    embedding and its embedding under every strategy S (e.g. BS{b}). Both
-    use the same hop windows (see trainer._eval_windows), so they differ
-    only in frame order. Returns {strategy: mean distance}."""
-    rngs = {strategy: np.random.default_rng(seed) for strategy in ("OS", *strategies)}
+    """Mean cosine distance 1 - cos(e_R, e_S) between each utterance's
+    embedding under a reference strategy R and under every strategy S. R is
+    OS, except for GS{b}, whose reference is the matched control GO{b}. Each
+    pair uses the same windows (see trainer._eval_windows) and differs only
+    in frame order; GO{b} and GS{b} also share the same artificial joins.
+    Returns {strategy: mean distance}."""
+    references = {strategy: f"GO{strategy[2:]}" if strategy.startswith("GS") else "OS" for strategy in strategies}
+    rngs = {strategy: np.random.default_rng(seed) for strategy in (*references.values(), *strategies)}
     embeddings = extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device)
-    reference = embeddings["OS"][0]
     return {
-        strategy: float(np.mean(1.0 - cosine_similarity(reference, embeddings[strategy][0])))
+        strategy: float(np.mean(1.0 - cosine_similarity(embeddings[references[strategy]][0], embeddings[strategy][0])))
         for strategy in strategies
     }
 

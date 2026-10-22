@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
+import torch
 
 from . import tracking
 from .config import ExperimentConfig
@@ -23,7 +24,7 @@ from .data.dataset import (
 )
 from .data.features import vtlp_warp
 from .data.lazy_features import LazyFeatures, expected_frame_count
-from .data.segments import DRAW_STRATEGIES
+from .data.segments import BLOCK_SIZES, DRAW_STRATEGIES
 from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
 from .data.voxceleb import VoxCelebCorpus
@@ -308,6 +309,47 @@ def _block_frames(strategy, segment_length):
     return None
 
 
+EER_CHANCE = 0.5
+
+# results keys of sst_bracket's measures, with their report headings.
+SST_MEASURES = {
+    "L": "SST lower estimate L(b) = EER(GS_b) - EER(GO_b) [EER %-points]",
+    "U": "SST upper estimate U(b) = EER(BS_b) - EER(OS) [EER %-points]",
+    "L_norm": "SST lower estimate, normalized L(b) / (50% - EER(OS)) [%]",
+    "U_norm": "SST upper estimate, normalized U(b) / (50% - EER(OS)) [%]",
+}
+
+
+def sst_bracket(eers, block_size):
+    """SST measures of one run at block size b, from its test EERs
+    ({test strategy: EER}); each is left out when its strategies weren't
+    tested:
+
+    - L: EER(GS_b) - EER(GO_b). GO_b and GS_b have the same blocks and joins,
+      so splicing artefacts cancel, but the gaps already remove structure
+      across joins in both: tends to underestimate the true cost T(b).
+    - U: EER(BS_b) - EER(OS), the plain block shuffle: also counts the
+      artefacts at its joins, so tends to overestimate T(b).
+    - L_norm, U_norm: L and U divided by the OS model's headroom to chance,
+      EER_chance - EER(OS) -- one common denominator, so the normalized band
+      brackets T(b) / (EER_chance - EER(OS)) and compares across models of
+      different baseline EER.
+
+    L <= T(b) <= U holds if artefacts never improve EER and combine
+    roughly additively with the information lost."""
+    measures = {}
+    go, gs, bs, os_ = (eers.get(strategy) for strategy in (f"GO{block_size}", f"GS{block_size}", f"BS{block_size}", "OS"))
+    if go is not None and gs is not None:
+        measures["L"] = gs - go
+    if bs is not None and os_ is not None:
+        measures["U"] = bs - os_
+    if os_ is not None:
+        for measure in ("L", "U"):
+            if measure in measures:
+                measures[f"{measure}_norm"] = measures[measure] / (EER_CHANCE - os_)
+    return measures
+
+
 def _log_eer_by_block(run, key, eers_by_strategy, segment_length, transformation, title):
     """Line chart of SV EER [%] over the signal one shuffled block spans,
     (b - 1) * frame step + frame length, for the block-shuffle test strategies
@@ -535,26 +577,85 @@ def run_experiment(config, corpus=None, strategies=None):
                         "be continued"
                     )
                 continued.add(run_idx)
+
+        def collect(run_idx, record):
+            for test_strategy in test_strategies:
+                raw_sv[test_strategy].append(record["sv"][test_strategy])
+                # Older manifests predate minDCF.
+                if test_strategy in record.get("sv_min_dcf", {}):
+                    raw_sv_min_dcf[test_strategy].append(record["sv_min_dcf"][test_strategy])
+                if raw_sc is not None:
+                    raw_sc[test_strategy].append(record["sc"][test_strategy])
+            if record.get("sv_paper_comparable") is not None:
+                raw_sv_paper_comparable.append(record["sv_paper_comparable"])
+            raw_run_indices.append(run_idx)
+
+        def evaluate(model, run_idx, record, strategies_to_test):
+            """Scores model under strategies_to_test into record (raw [0, 1]
+            fractions) and returns the matching summary entries (percentages,
+            matching Tables 1/2 in Neururer et al. 2024). One pass per
+            utterance set for all of them, each with its own Generator seeded
+            as a separate extract_embeddings(seed=run_idx) call would be --
+            so scoring a strategy later gives the same result as scoring it
+            together with the others."""
+            summary = {}
+            started = time.perf_counter()
+            print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
+            sv_by_strategy = extract_embeddings_by_strategy(
+                model, sv_eval_utterances, segment_length,
+                {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
+                device=config.device, num_workers=config.training.num_workers, log_every=10_000,
+            )
+            print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
+            if sc_utterances is not None:
+                sc_by_strategy = extract_embeddings_by_strategy(
+                    model, sc_utterances, segment_length,
+                    {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
+                    device=config.device, num_workers=config.training.num_workers,
+                )
+            for test_strategy in strategies_to_test:
+                sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
+                eer = sv_eval_fn(sv_embeddings, sv_labels)
+                record["sv"][test_strategy] = eer
+                summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
+                dcf = sv_min_dcf_fn(sv_embeddings, sv_labels)
+                record.setdefault("sv_min_dcf", {})[test_strategy] = dcf
+                summary[f"run{run_idx}/final/SV_minDCF_test-{test_strategy}"] = dcf
+
+                if sc_utterances is not None:
+                    sc_embeddings, sc_labels = sc_by_strategy[test_strategy]
+                    mr = best_misclassification_rate(sc_embeddings, sc_labels)
+                    record["sc"][test_strategy] = mr
+                    summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
+            return summary
+
+        def log_run(run_idx, record, summary):
+            tracking.log_summary(run, summary)
+            _log_eer_by_block(
+                run, f"final/SV_EER_by_block/run{run_idx}",
+                {test_strategy: {f"run{run_idx}": eer} for test_strategy, eer in record["sv"].items()},
+                segment_length, transformation, f"SV EER [%] by shuffled block span, run {run_idx}",
+            )
+
         for run_idx, completed_record in manifest["completed"].items():
             if run_idx in continued:
                 continue
             missing = [t for t in test_strategies if t not in completed_record["sv"]]
             if missing:
-                # The run's checkpoints are gone, so it can't be re-evaluated.
-                raise ValueError(
-                    f"{manifest_path} has completed runs never evaluated under {missing}; "
-                    "set a different wandb.run_postfix to train a fresh sweep"
-                )
-            for test_strategy in test_strategies:
-                raw_sv[test_strategy].append(completed_record["sv"][test_strategy])
-                # Older manifests predate minDCF.
-                if test_strategy in completed_record.get("sv_min_dcf", {}):
-                    raw_sv_min_dcf[test_strategy].append(completed_record["sv_min_dcf"][test_strategy])
-                if raw_sc is not None:
-                    raw_sc[test_strategy].append(completed_record["sc"][test_strategy])
-            if completed_record.get("sv_paper_comparable") is not None:
-                raw_sv_paper_comparable.append(completed_record["sv_paper_comparable"])
-            raw_run_indices.append(run_idx)
+                # Scored from the run's kept best weights (training.keep_checkpoints).
+                best_path = best_checkpoint_path(_checkpoint_path(config, train_strategy, run_idx))
+                if not best_path.exists():
+                    raise ValueError(
+                        f"{manifest_path} has completed runs never evaluated under {missing}, and their best "
+                        "checkpoint is gone; set a different wandb.run_postfix to train a fresh sweep"
+                    )
+                print(f"==> Evaluating completed run {run_idx} under {missing}", flush=True)
+                model = build_model(config)
+                model.load_state_dict(torch.load(best_path, map_location=config.device)["model_state_dict"])
+                model.to(config.device)
+                log_run(run_idx, completed_record, evaluate(model, run_idx, completed_record, missing))
+                _save_manifest(manifest_path, manifest)
+            collect(run_idx, completed_record)
 
         for run_idx in range(config.num_runs):
             if run_idx in manifest["completed"] and run_idx not in continued:
@@ -592,59 +693,15 @@ def run_experiment(config, corpus=None, strategies=None):
                 dev_eval_fn=dev_eval_fn,
             )
 
-            # summary reports this single run's numbers as percentages, matching
-            # Tables 1/2 in Neururer et al. 2024 and context/src/train.py's console output.
-            summary = {}
             record = {"sv": {}, "sv_min_dcf": {}, "num_epochs": config.training.num_epochs}
             if sc_utterances is not None:
                 record["sc"] = {}
             record["sv_paper_comparable"] = paper_comparable_best
+            summary = evaluate(model, run_idx, record, test_strategies)
             if paper_comparable_best is not None:
-                raw_sv_paper_comparable.append(paper_comparable_best)
                 summary[f"run{run_idx}/final/SV_EER_paper_comparable"] = paper_comparable_best * 100
-            # One pass per utterance set for all test strategies, each with its
-            # own Generator seeded as a separate extract_embeddings(seed=run_idx)
-            # call would be.
-            started = time.perf_counter()
-            print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
-            sv_by_strategy = extract_embeddings_by_strategy(
-                model, sv_eval_utterances, segment_length,
-                {test_strategy: np.random.default_rng(run_idx) for test_strategy in test_strategies},
-                device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-            )
-            print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
-            if sc_utterances is not None:
-                sc_by_strategy = extract_embeddings_by_strategy(
-                    model, sc_utterances, segment_length,
-                    {test_strategy: np.random.default_rng(run_idx) for test_strategy in test_strategies},
-                    device=config.device, num_workers=config.training.num_workers,
-                )
-            for test_strategy in test_strategies:
-                sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
-                eer = sv_eval_fn(sv_embeddings, sv_labels)
-                raw_sv[test_strategy].append(eer)
-                record["sv"][test_strategy] = eer
-                summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
-                dcf = sv_min_dcf_fn(sv_embeddings, sv_labels)
-                raw_sv_min_dcf[test_strategy].append(dcf)
-                record["sv_min_dcf"][test_strategy] = dcf
-                summary[f"run{run_idx}/final/SV_minDCF_test-{test_strategy}"] = dcf
-
-                if sc_utterances is not None:
-                    sc_embeddings, sc_labels = sc_by_strategy[test_strategy]
-                    mr = best_misclassification_rate(sc_embeddings, sc_labels)
-                    raw_sc[test_strategy].append(mr)
-                    record["sc"][test_strategy] = mr
-                    summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
-
-            tracking.log_summary(run, summary)
-            _log_eer_by_block(
-                run, f"final/SV_EER_by_block/run{run_idx}",
-                {test_strategy: {f"run{run_idx}": eer} for test_strategy, eer in record["sv"].items()},
-                segment_length, transformation, f"SV EER [%] by shuffled block span, run {run_idx}",
-            )
-
-            raw_run_indices.append(run_idx)
+            log_run(run_idx, record, summary)
+            collect(run_idx, record)
 
             # Persisted before deleting the checkpoint: this run_idx is now
             # durably done, so a crash from here on skips straight past it.
@@ -675,6 +732,18 @@ def run_experiment(config, corpus=None, strategies=None):
                 results["SC"][(train_strategy, test_strategy)] = sc_stats
                 aggregate_summary[f"final/SC_MR_test-{test_strategy}_mean"] = sc_stats.mean * 100
                 aggregate_summary[f"final/SC_MR_test-{test_strategy}_std"] = sc_stats.std * 100
+        # Per run first, then mean/SD over runs (not measures of mean EERs).
+        for block_size in BLOCK_SIZES:
+            per_run = [
+                sst_bracket({test_strategy: raw_sv[test_strategy][i] for test_strategy in test_strategies}, block_size)
+                for i in range(len(raw_run_indices))
+            ]
+            for measure in SST_MEASURES:
+                if per_run and measure in per_run[0]:
+                    stats = _run_statistics([values[measure] for values in per_run])
+                    results.setdefault(f"SST_{measure}", {})[(train_strategy, f"b{block_size}")] = stats
+                    aggregate_summary[f"final/SST_{measure}_b{block_size}_mean"] = stats.mean * 100
+                    aggregate_summary[f"final/SST_{measure}_b{block_size}_std"] = stats.std * 100
         if raw_sv_paper_comparable:
             paper_stats = _run_statistics(raw_sv_paper_comparable)
             results["SV_paper_comparable"][train_strategy] = paper_stats
@@ -703,9 +772,12 @@ def format_results(results):
     `results` itself stores RunStatistics of raw [0, 1] fractions. "SC" is
     absent for VoxCeleb runs (Neururer et al. 2024 omits the SC task there),
     so only tasks actually present in `results` are reported. minDCF is
-    already normalized and is reported unscaled."""
+    already normalized and is reported unscaled. The SST_* tables report
+    sst_bracket's measures per block size b, also on a 0-100 scale."""
     lines = []
-    for task, heading, scale in (("SV", "SV (EER) [%]", 100), ("SV_minDCF", "SV (minDCF)", 1), ("SC", "SC (MR) [%]", 100)):
+    tasks = [("SV", "SV (EER) [%]", 100, "test"), ("SV_minDCF", "SV (minDCF)", 1, "test"), ("SC", "SC (MR) [%]", 100, "test")]
+    tasks += [(f"SST_{measure}", heading, 100, "block") for measure, heading in SST_MEASURES.items()]
+    for task, heading, scale, column in tasks:
         if not results.get(task):
             continue
         # Only trained strategies have rows -- a --strategy-restricted run
@@ -713,7 +785,8 @@ def format_results(results):
         trained_strategies = list(dict.fromkeys(s for s, _ in results[task]))
         test_strategies = list(dict.fromkeys(t for _, t in results[task]))
         lines.append(f"{heading}:")
-        lines.append("train\\test  " + "  ".join(f"{s:>14}" for s in test_strategies))
+        header = "train\\" + column
+        lines.append(f"{header:<11} " + "  ".join(f"{s:>14}" for s in test_strategies))
         for train_strategy in trained_strategies:
             row = []
             for test_strategy in test_strategies:

@@ -1,0 +1,52 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 3                # as the Conformer's stage 1, so the architectures compare like for like
+
+# The SST bracket study (see src/README.md): the setup of the Conformer's
+# stage 1 (conformer-voxceleb-stage1.yaml) with the CNN instead.
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 2.0    # 188 frames: even 64-frame blocks leave 3 to permute, and test windows span 2 s
+
+# Per-segment band-mean normalization instead of context/src's per-frame
+# z-score, which deletes the energy contour (see TransformationConfig).
+transformation:
+  normalization: "segment"
+
+voxceleb:
+  root: "~/.cache/datasets/voxceleb1"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  vox2_root: "~/.cache/datasets/voxceleb2"   # VoxCeleb2 dev as 16 kHz WAV, downloaded + converted manually
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"          # checkpoint selection
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
+
+model:
+  type: "CNN"
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  strategies: [OS]         # the bracket is measured on the OS-trained model
+  keep_checkpoints: true   # best weights for later probes; latest state to continue by raising num_epochs
+  num_epochs: 64           # as the Conformer's stage 1
+  batch_size: 100
+  checkpoint_every_epochs: 1
+  paper_checkpoint_epochs: false
+  # Training segments are read from disk per draw -- match the SLURM jobs'
+  # --cpus-per-task.
+  num_workers: 32
+  compile: true            # CUDA graphs, see TrainingConfig.compile
+
+evaluation:
+  # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: the same blocks spread
+  # over the utterance, in original/shuffled order, for L(b)
+  # (see src/experiment.py's sst_bracket). Blocks of 8/16/32/64 frames span
+  # 134/214/374/694 ms of signal.
+  test_strategies: [OS, SS, BS8, BS16, BS32, BS64, GO8, GS8, GO16, GS16, GO32, GS32, GO64, GS64]
+
+wandb:
+  run_postfix: SST
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []

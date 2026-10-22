@@ -99,3 +99,40 @@ def test_shuffle_blocks_never_returns_the_original_order():
 
 def test_draw_strategies_register_block_shuffles_and_mixtures():
     assert {"OS", "SS", "SU", "BS4", "BS64", "MIX", "RANDBS"} <= set(DRAW_STRATEGIES)
+
+
+def test_gapped_segment_spreads_ordered_blocks_over_the_utterance(utterance):
+    from src.data.segments import gapped_segment
+
+    # 300 frames, 6 blocks of 16: gap (300 - 96) // 6 = 34, slack 204 - 5 * 34 = 34.
+    rows = gapped_segment(utterance, 96, 16, 0.0)[:, 0] / 8
+    assert len(rows) == 96
+    for i in range(6):
+        np.testing.assert_array_equal(rows[i * 16:(i + 1) * 16], np.arange(16) + i * 50)
+    last = gapped_segment(utterance, 96, 16, 1.0)[:, 0] / 8
+    assert last[0] == 34 and last[-1] == 299
+
+
+def test_gapped_segment_keeps_a_shorter_last_block(utterance):
+    from src.data.segments import gapped_segment
+
+    rows = gapped_segment(utterance, 40, 16, 0.0)[:, 0] / 8  # blocks of 16, 16, 8; gap 260 // 3 = 86
+    np.testing.assert_array_equal(rows, np.concatenate([np.arange(16), np.arange(16) + 102, np.arange(8) + 204]))
+
+
+@pytest.mark.parametrize("block_size", [4, 16])
+def test_gs_shuffles_exactly_the_blocks_of_the_matching_go_draw(utterance, block_size):
+    from src.data.segments import draw_go, draw_gs
+
+    go = draw_go(utterance, 96, np.random.default_rng(3), block_size=block_size)
+    gs = draw_gs(utterance, 96, np.random.default_rng(3), block_size=block_size)
+    assert not np.array_equal(go, gs)
+
+    def blocks(segment):
+        return sorted(tuple(segment[st:st + block_size, 0]) for st in range(0, 96, block_size))
+
+    assert blocks(gs) == blocks(go)
+
+
+def test_draw_strategies_register_gapped_block_pairs():
+    assert {"GO8", "GS8", "GO64", "GS64"} <= set(DRAW_STRATEGIES)
