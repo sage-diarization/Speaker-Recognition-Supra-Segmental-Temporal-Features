@@ -141,3 +141,14 @@ def test_attention_distances_has_one_value_per_layer_and_head():
     assert distances.shape == (2, 2)
     # 8 encoder steps: offsets range 0..7 steps.
     assert np.all((distances >= 0) & (distances <= 7 * 40))
+
+
+def test_attention_offset_profiles_are_distributions_over_offsets():
+    from src.evaluation.temporal_probes import attention_offset_profiles
+
+    model = _tiny_model()
+    profiles = attention_offset_profiles(model, torch.randn(2, 1, 32, 20))
+    # 2 layers x 2 heads, 8 encoder steps: offsets 0..7.
+    assert profiles.shape == (2, 2, 8)
+    assert np.all(profiles >= 0)
+    np.testing.assert_allclose(profiles.sum(-1), 1.0, rtol=1e-5)
