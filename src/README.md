@@ -212,7 +212,12 @@ and one that keeps them and leans high.
 
 GO{b} and GS{b} take the same blocks in every window
 (`src/training/trainer.py`'s `_eval_windows`), so they have the same
-content and the same joins and differ only in block order. The gap grows
+content and the same number of joins, and differ only in block order. The
+joins themselves are not identical: GO{b} always splices block j to block
+j + 1, one gap apart, while GS{b} splices random pairs of blocks, on
+average further apart in the utterance. GS{b}'s joins can therefore be
+rougher, most of all when the gap is small (short utterances, small b);
+see the join discontinuity check below. The gap grows
 with the utterance length: as N approaches the segment length it shrinks
 to 0 and GO{b} becomes OS.
 
@@ -227,9 +232,12 @@ Per run and block size, `src/experiment.py`'s `sst_bracket` reports:
 | L_norm(b) | L(b) / (50% − EER(OS)) | % of headroom |
 | U_norm(b) | U(b) / (50% − EER(OS)) | % of headroom |
 
-**L(b), the lower estimate.** GO_b and GS_b contain the same joins, so the
-join artefacts cancel in their difference, and L(b) is the cost of the
-block order alone. It tends to underestimate T(b): the gaps already break
+**L(b), the lower estimate.** GO_b and GS_b contain the same blocks and
+the same number of joins, so the join artefacts largely cancel in their
+difference, and L(b) is mainly the cost of the block order. What doesn't
+cancel is the difference in join roughness, δ_A = A(GS_b) − A(GO_b), which
+pushes L(b) up (see the quality checks). Otherwise L(b) tends to
+underestimate T(b): the gaps already break
 all structure that spans a join, such as rhythm across neighbouring
 syllables or a pitch movement continuing into the next block. That
 structure is missing from GO_b as well, so its loss isn't counted. L(b)
@@ -254,8 +262,9 @@ follows:
 - L ≈ 0 and U clearly > 0: the test can't distinguish SST use across the
   joins from sensitivity to the artefacts. The width U − L bounds both
   together.
-- L clearly > 0: the model uses the order of the blocks. The joins are
-  matched, so artefacts can't explain this.
+- L clearly > 0 (beyond the placebo and the bootstrap interval): the
+  model uses the order of the blocks, provided the join discontinuity
+  check shows GO's and GS's joins equally rough, so δ_A can't explain it.
 
 EER(GO_b) − EER(OS) is the cost of the joins and gaps alone (from the SV
 table), which shows how much of U(b) may be artefact.
@@ -278,6 +287,59 @@ not computed from mean EERs. The measures are printed and logged to wandb
 as `final/SST_{L,U,L_norm,U_norm}_b{b}_{mean,std}`.
 `doc/temporal-probes.ipynb`'s `permutation_sensitivity` also accepts
 GS{b}, which it compares against GO{b} instead of OS.
+
+#### Quality checks
+
+L(b) and U(b) are estimators of T(b) with different errors, so each needs
+its own error term rather than a shared one:
+
+    U(b) = T(b) + A_BS + I_U + ε_U
+    L(b) = T(b) − O_x + (O_blk' − O_blk) + δ_A + I_L + ε_L
+
+with T(b) = O_blk + O_x the cost of the order of the blocks (O_blk) and of
+the structure across their boundaries (O_x); O_blk' the block-order cost
+measured in the gapped context; A_BS the cost of BS's join artefacts; δ_A
+the join roughness that doesn't cancel between GS and GO; I_U, I_L
+interactions (failures of additivity); and ε_U, ε_L noise. U's bias is
+mostly positive, L's mostly negative, except δ_A. Three checks put numbers
+on what can be measured:
+
+| Check | Estimates | Where |
+|---|---|---|
+| Paired trial bootstrap | ε from the finite trial list | `evaluation.sst_bootstrap_resamples`; printed as `±` |
+| Placebo P(b) = EER(GS_b, 2nd seed) − EER(GS_b) | ε from the random block order | `evaluation.sst_placebo`; `SST placebo` table |
+| Join discontinuity | δ_A, from the input alone | `src/evaluation/temporal_probes.py`'s `join_discontinuity` |
+
+- **Paired trial bootstrap.** Each run's trials are resampled with
+  replacement, the same resample for every test strategy, and the four
+  measures are recomputed: 95% percentile intervals per run (manifest
+  `sst_ci`, wandb `run{i}/final/SST_{measure}_b{b}_ci_{low,high}`), and
+  their half-width averaged over runs (the `±` in the printed tables).
+  Pairing cancels noise common to both conditions of a difference. Trials
+  sharing an utterance aren't independent, so the intervals are somewhat
+  too narrow. They cover neither the training run (see the SD over runs)
+  nor the block order (see the placebo).
+- **Placebo.** Every GS{b} is scored a second time with another
+  permutation seed: same windows, same blocks, a different random order.
+  The true difference is 0, so its spread is the noise floor of L(b): an
+  L(b) within the placebo's spread can't be told apart from 0.
+- **Join discontinuity.** The Euclidean distance between the two frames
+  at every join of BS{b}, GO{b} and GS{b}, and between consecutive OS
+  frames as the natural baseline, over the evaluation windows. No model
+  is involved. If GS's joins are clearly rougher than GO's at some b, δ_A
+  may inflate L(b) there. It is a notebook probe
+  (`doc/temporal-probes.ipynb`), since it depends only on the data.
+
+With both switches set (as in all bracket configs), completed runs whose
+manifest lacks the checks are scored again from their kept best
+checkpoint. The checks need every strategy's per-trial scores, which the
+manifest doesn't keep, so all test strategies are re-embedded. The EERs
+come out the same as before.
+
+Not covered yet: the bias terms O_x, O_blk' − O_blk and the interactions.
+A synthetic positive control (speakers that differ only in order above b)
+and a crossfade variant of the joins (U should fall with the crossfade, L
+shouldn't move) would test them.
 
 All architectures use the Conformer stage 1 setup (VoxCeleb, 2 s segments,
 `normalization: "segment"`, 64 epochs, 3 runs), trained on OS only:

@@ -1077,3 +1077,58 @@ def test_run_experiment_evaluates_completed_runs_under_new_test_strategies_from_
     manifest = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))
     assert set(manifest["completed"][0]["sv"]) == {"OS", "GO16", "GS16"}
     assert ("OS", "b16") in results["SST_L"]
+
+
+def test_sst_bootstrap_intervals_are_paired_and_contain_the_point_estimate():
+    rng = np.random.default_rng(0)
+    labels = np.repeat([1, 0], 200)
+    os_scores = rng.normal(labels * 1.5, 1.0)
+    scores = {"OS": os_scores, "GO16": os_scores - 0.3 * labels, "GS16": os_scores - 0.3 * labels, "BS16": os_scores - 0.6 * labels}
+    intervals = experiment_module.sst_bootstrap_intervals(labels, scores, 100, np.random.default_rng(1))
+
+    assert set(intervals) == {"L_b16", "U_b16", "L_norm_b16", "U_norm_b16"}
+    # GO and GS score every trial alike: paired resampling leaves no spread.
+    assert intervals["L_b16"] == (0.0, 0.0)
+    eers = {strategy: experiment_module.eer_from_scores(labels, values) for strategy, values in scores.items()}
+    low, high = intervals["U_b16"]
+    assert low <= experiment_module.sst_bracket(eers, 16)["U"] <= high
+    assert low > 0
+
+
+def _sst_quality_config():
+    config = _continuation_config(1)
+    config.evaluation.test_strategies = ["OS", "BS16", "GO16", "GS16"]
+    config.evaluation.sst_bootstrap_resamples = 20
+    config.evaluation.sst_placebo = True
+    return config
+
+
+def test_run_experiment_reports_bootstrap_intervals_and_the_gs_placebo():
+    config = _sst_quality_config()
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+
+    record = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))["completed"][0]
+    assert set(record["sst_ci"]) == {"L_b16", "U_b16", "L_norm_b16", "U_norm_b16"}
+    assert all(low <= high for low, high in record["sst_ci"].values())
+    assert set(record["sst_placebo"]) == {"b16"}
+    assert results["SST_placebo"][("OS", "b16")].mean == pytest.approx(record["sst_placebo"]["b16"])
+    assert ("OS", "b16") in results["SST_L_ci"]
+    report = format_results(results)
+    assert "SST placebo" in report and "±" in report
+
+
+def test_run_experiment_adds_the_quality_checks_to_completed_runs_without_retraining(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    config = _sst_quality_config()
+    config.evaluation.sst_bootstrap_resamples = 0
+    config.evaluation.sst_placebo = False
+    first = run_experiment(config, corpus=corpus)
+
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: pytest.fail("retrained"))
+    config = _sst_quality_config()
+    results = run_experiment(config, corpus=corpus)
+
+    record = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))["completed"][0]
+    assert "sst_ci" in record and "sst_placebo" in record
+    for strategy in config.evaluation.test_strategies:
+        assert results["SV"][("OS", strategy)].mean == pytest.approx(first["SV"][("OS", strategy)].mean)

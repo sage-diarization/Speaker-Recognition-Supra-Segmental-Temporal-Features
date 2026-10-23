@@ -24,7 +24,7 @@ def build_verification_pairs(speaker_ids):
     return np.array(idx1), np.array(idx2), np.array(labels)
 
 
-def _eer(labels, scores):
+def eer_from_scores(labels, scores):
     fpr, tpr, _ = roc_curve(labels, scores, pos_label=1)
     eer = brentq(lambda x: 1.0 - x - interp1d(fpr, tpr)(x), 0.0, 1.0)
     return float(eer)
@@ -38,20 +38,20 @@ def min_dcf(labels, scores, p_target=0.01, c_miss=1.0, c_fa=1.0):
     return float(cost.min() / min(c_miss * p_target, c_fa * (1.0 - p_target)))
 
 
-def _all_pairs_scores(embeddings, speaker_ids):
+def all_pairs_scores(embeddings, speaker_ids):
     idx1, idx2, labels = build_verification_pairs(speaker_ids)
     return labels, cosine_similarity(embeddings[idx1], embeddings[idx2])
 
 
 def equal_error_rate(embeddings, speaker_ids):
-    return _eer(*_all_pairs_scores(embeddings, speaker_ids))
+    return eer_from_scores(*all_pairs_scores(embeddings, speaker_ids))
 
 
 def all_pairs_min_dcf(embeddings, speaker_ids):
-    return min_dcf(*_all_pairs_scores(embeddings, speaker_ids))
+    return min_dcf(*all_pairs_scores(embeddings, speaker_ids))
 
 
-def _trial_list_scores(embeddings, utterance_ids, trial_pairs):
+def trial_list_scores(embeddings, utterance_ids, trial_pairs):
     embedding_by_id = dict(zip(utterance_ids, embeddings))
     labels = np.array([int(label) for label, _, _ in trial_pairs])
     embeddings1 = np.stack([embedding_by_id[utterance_id1] for _, utterance_id1, _ in trial_pairs])
@@ -71,11 +71,11 @@ def trial_list_equal_error_rate(embeddings, utterance_ids, trial_pairs):
     `embeddings`/`utterance_ids` are extract_embeddings' usual parallel
     arrays, with utterance_ids holding each row's relative wav path (as used
     by src/data/voxceleb.py) rather than a speaker id."""
-    return _eer(*_trial_list_scores(embeddings, utterance_ids, trial_pairs))
+    return eer_from_scores(*trial_list_scores(embeddings, utterance_ids, trial_pairs))
 
 
 def trial_list_min_dcf(embeddings, utterance_ids, trial_pairs):
-    return min_dcf(*_trial_list_scores(embeddings, utterance_ids, trial_pairs))
+    return min_dcf(*trial_list_scores(embeddings, utterance_ids, trial_pairs))
 
 
 class IndexedTrials(NamedTuple):
@@ -91,7 +91,7 @@ class IndexedTrials(NamedTuple):
     idx2: np.ndarray
 
 
-def _indexed_trial_scores(embeddings, utterance_ids, trials, chunk_size):
+def indexed_trial_scores(embeddings, utterance_ids, trials, chunk_size):
     row_by_id = {utterance_id: row for row, utterance_id in enumerate(utterance_ids)}
     order = np.array([row_by_id[utterance_id] for utterance_id in trials.utterance_ids])
     normed = embeddings[order] / np.linalg.norm(embeddings[order], axis=-1, keepdims=True)
@@ -111,8 +111,8 @@ def indexed_trial_equal_error_rate(embeddings, utterance_ids, trials, chunk_size
     Every id in trials.utterance_ids must be present in `utterance_ids`
     (extract_embeddings silently skips utterances no longer than one
     segment, so callers must drop trials referencing those beforehand)."""
-    return _eer(*_indexed_trial_scores(embeddings, utterance_ids, trials, chunk_size))
+    return eer_from_scores(*indexed_trial_scores(embeddings, utterance_ids, trials, chunk_size))
 
 
 def indexed_trial_min_dcf(embeddings, utterance_ids, trials, chunk_size=200_000):
-    return min_dcf(*_indexed_trial_scores(embeddings, utterance_ids, trials, chunk_size))
+    return min_dcf(*indexed_trial_scores(embeddings, utterance_ids, trials, chunk_size))

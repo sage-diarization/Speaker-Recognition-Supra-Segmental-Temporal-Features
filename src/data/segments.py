@@ -84,8 +84,8 @@ def gapped_segment(data, segment_length, block_size, position):
 
 def draw_go(data, segment_length, rng=None, block_size=1):
     """Gapped, Ordered blocks (the control C_b): gapped_segment at a random
-    position. Its joins are as artificial as GS's, but the block order is
-    the original one."""
+    position. Its joins splice frames that were never adjacent, like GS's,
+    but the block order is the original one."""
     rng = rng or np.random.default_rng()
     return gapped_segment(data, segment_length, block_size, rng.random())
 
@@ -93,7 +93,8 @@ def draw_go(data, segment_length, rng=None, block_size=1):
 def draw_gs(data, segment_length, rng=None, block_size=1):
     """Gapped, Shuffled blocks (S_b): GO's blocks in random order. GS{b}
     against GO{b} differs only in block order, with the same blocks and
-    joins."""
+    number of joins. Its joins splice random pairs of blocks rather than
+    neighbours, so they can be rougher (see temporal_probes.join_discontinuity)."""
     rng = rng or np.random.default_rng()
     return shuffle_blocks(draw_go(data, segment_length, rng, block_size), block_size, rng)
 

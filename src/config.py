@@ -327,6 +327,14 @@ class EvaluationConfig:
     # standard 50-speaker TIMIT development set, the closest match to context/src's
     # "development" SV list (see src/experiment.py's run_experiment).
     dev_speakers: list = field(default_factory=list)
+    # Paired trial-bootstrap resamples per run for 95% intervals of the SST
+    # bracket's measures (see src/experiment.py's sst_bootstrap_intervals).
+    # 0 (the default) computes none.
+    sst_bootstrap_resamples: int = 0
+    # Also score every GS{b} test strategy with a second permutation seed:
+    # the placebo EER(GS_b, 2nd seed) - EER(GS_b) is the noise the random
+    # block order alone adds to L(b).
+    sst_placebo: bool = False
 
 
 @dataclass

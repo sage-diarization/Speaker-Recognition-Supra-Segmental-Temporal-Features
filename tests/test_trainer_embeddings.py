@@ -316,3 +316,31 @@ def test_permutation_sensitivity_compares_gs_against_its_go_control():
     sensitivity = permutation_sensitivity(_FrameMeanModel(), utterances, 20, ["GS4", "GO4"])
     assert abs(sensitivity["GS4"]) < 1e-6  # same frames as GO4, only reordered
     assert sensitivity["GO4"] > 1e-3       # other frames than OS
+
+
+def test_join_discontinuity_measures_every_join_and_adjacent_frames():
+    from src.evaluation.temporal_probes import join_discontinuity
+
+    # A ramp: frame t is t everywhere, so a join's distance is how far apart its frames were.
+    features = np.repeat(np.arange(200, dtype=np.float32)[:, None], 4, axis=1)
+    distances = join_discontinuity([(features, 0)], 40, ["BS8", "GO8", "GS8"])
+
+    num_windows = (200 - 40) // 20 + 1
+    np.testing.assert_allclose(distances["adjacent"], 2.0)  # sqrt(4 bands)
+    assert len(distances["adjacent"]) == num_windows * 39
+    # GO joins jump forward by one block and one gap of (200 - 40) // 5 = 32 frames.
+    assert len(distances["GO8"]) == num_windows * 4
+    np.testing.assert_allclose(distances["GO8"], (1 + 32) * 2.0)
+    assert distances["GS8"].mean() > distances["GO8"].mean()
+    # Shuffled blocks that stay original neighbours make no join.
+    assert 0 < len(distances["BS8"]) <= num_windows * 4
+    assert np.all(distances["BS8"] != 2.0)
+
+
+def test_join_discontinuity_finds_joins_next_to_a_shorter_last_block():
+    from src.evaluation.temporal_probes import join_discontinuity
+
+    features = np.repeat(np.arange(300, dtype=np.float32)[:, None], 1, axis=1)
+    distances = join_discontinuity([(features, 0)], 44, ["GS16"])  # blocks of 16, 16, 12
+    # No join is a step between neighbouring frames, wherever the 12-frame block lands.
+    assert np.all(distances["GS16"] > 1.0)

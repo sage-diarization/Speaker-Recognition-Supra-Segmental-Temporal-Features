@@ -33,11 +33,15 @@ from .evaluation.clustering import best_misclassification_rate
 from .evaluation.verification import (
     IndexedTrials,
     all_pairs_min_dcf,
+    all_pairs_scores,
+    eer_from_scores,
     equal_error_rate,
     indexed_trial_equal_error_rate,
     indexed_trial_min_dcf,
+    indexed_trial_scores,
     trial_list_equal_error_rate,
     trial_list_min_dcf,
+    trial_list_scores,
 )
 from .models.losses import build_loss
 from .models.registry import build_model
@@ -325,9 +329,11 @@ def sst_bracket(eers, block_size):
     ({test strategy: EER}); each is left out when its strategies weren't
     tested:
 
-    - L: EER(GS_b) - EER(GO_b). GO_b and GS_b have the same blocks and joins,
-      so splicing artefacts cancel, but the gaps already remove structure
-      across joins in both: tends to underestimate the true cost T(b).
+    - L: EER(GS_b) - EER(GO_b). GO_b and GS_b have the same blocks and
+      number of joins, so splicing artefacts largely cancel (GS's joins can
+      be rougher, see temporal_probes.join_discontinuity), but the gaps
+      already remove structure across joins in both: tends to
+      underestimate the true cost T(b).
     - U: EER(BS_b) - EER(OS), the plain block shuffle: also counts the
       artefacts at its joins, so tends to overestimate T(b).
     - L_norm, U_norm: L and U divided by the OS model's headroom to chance,
@@ -348,6 +354,30 @@ def sst_bracket(eers, block_size):
             if measure in measures:
                 measures[f"{measure}_norm"] = measures[measure] / (EER_CHANCE - os_)
     return measures
+
+
+def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
+    """Percentile intervals of sst_bracket's measures over num_resamples
+    resamples of the trials with replacement. scores maps test strategies
+    to their per-trial scores over the same trials (labels), and every
+    resample is shared by all strategies, so the EER differences are paired:
+    noise common to both conditions of a difference cancels. Returns
+    {f"{measure}_b{b}": (low, high)}.
+
+    Only the trial sampling is resampled: the trained model and the random
+    block orders stay fixed (see the placebo and the SD over runs for
+    those). Trials sharing an utterance aren't independent, so the
+    intervals are somewhat too narrow."""
+    labels = np.asarray(labels)
+    samples = {}
+    for _ in range(num_resamples):
+        indices = rng.integers(0, len(labels), len(labels))
+        eers = {strategy: eer_from_scores(labels[indices], np.asarray(values)[indices]) for strategy, values in scores.items()}
+        for block_size in BLOCK_SIZES:
+            for measure, value in sst_bracket(eers, block_size).items():
+                samples.setdefault(f"{measure}_b{block_size}", []).append(value)
+    tail = (1 - level) / 2
+    return {key: (float(np.quantile(values, tail)), float(np.quantile(values, 1 - tail))) for key, values in samples.items()}
 
 
 def _log_eer_by_block(run, key, eers_by_strategy, segment_length, transformation, title):
@@ -463,6 +493,9 @@ def run_experiment(config, corpus=None, strategies=None):
         def sv_min_dcf_fn(embeddings, utterance_ids):
             return trial_list_min_dcf(embeddings, utterance_ids, corpus.trial_pairs)
 
+        def sv_scores_fn(embeddings, utterance_ids):
+            return trial_list_scores(embeddings, utterance_ids, corpus.trial_pairs)
+
         # train()'s periodic dev-eval must also use the trial-list function --
         # plain equal_error_rate would be nonsensical here (utterance_ids are
         # unique per-utterance path strings, not speaker ids, so every pair
@@ -492,6 +525,9 @@ def run_experiment(config, corpus=None, strategies=None):
         def sv_min_dcf_fn(embeddings, utterance_ids):
             return indexed_trial_min_dcf(embeddings, utterance_ids, eval_trials)
 
+        def sv_scores_fn(embeddings, utterance_ids):
+            return indexed_trial_scores(embeddings, utterance_ids, eval_trials, chunk_size=200_000)
+
         def dev_eval_fn(embeddings, utterance_ids):
             return indexed_trial_equal_error_rate(embeddings, utterance_ids, dev_trials)
     else:
@@ -514,6 +550,7 @@ def run_experiment(config, corpus=None, strategies=None):
         )
         sv_eval_fn = equal_error_rate
         sv_min_dcf_fn = all_pairs_min_dcf
+        sv_scores_fn = all_pairs_scores
         # train()'s own default (trainer.py's equal_error_rate) is exactly
         # this same function -- no need to route dev-eval through this
         # module's reference for TIMIT.
@@ -559,6 +596,10 @@ def run_experiment(config, corpus=None, strategies=None):
         # ever uses draw_strategy=train_strategy). Older manifests predate this
         # field, hence the .get.
         raw_sv_paper_comparable = []
+        # Per run: sst_bootstrap_intervals' intervals, and the GS placebo
+        # differences by block size (see evaluate below), when computed.
+        raw_sst_ci = []
+        raw_sst_placebo = []
         # Run index of each entry in the raw_* lists above.
         raw_run_indices = []
         # Completed runs trained for fewer epochs than configured now continue
@@ -588,6 +629,10 @@ def run_experiment(config, corpus=None, strategies=None):
                     raw_sc[test_strategy].append(record["sc"][test_strategy])
             if record.get("sv_paper_comparable") is not None:
                 raw_sv_paper_comparable.append(record["sv_paper_comparable"])
+            if "sst_ci" in record:
+                raw_sst_ci.append(record["sst_ci"])
+            if "sst_placebo" in record:
+                raw_sst_placebo.append(record["sst_placebo"])
             raw_run_indices.append(run_idx)
 
         def evaluate(model, run_idx, record, strategies_to_test):
@@ -597,7 +642,13 @@ def run_experiment(config, corpus=None, strategies=None):
             utterance set for all of them, each with its own Generator seeded
             as a separate extract_embeddings(seed=run_idx) call would be --
             so scoring a strategy later gives the same result as scoring it
-            together with the others."""
+            together with the others.
+
+            Scoring all test strategies also computes the SST bracket's
+            quality checks, when configured: paired trial-bootstrap intervals
+            (evaluation.sst_bootstrap_resamples) and the placebo, every GS{b}
+            scored again with a second permutation seed
+            (evaluation.sst_placebo)."""
             summary = {}
             started = time.perf_counter()
             print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
@@ -627,6 +678,34 @@ def run_experiment(config, corpus=None, strategies=None):
                     mr = best_misclassification_rate(sc_embeddings, sc_labels)
                     record["sc"][test_strategy] = mr
                     summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
+
+            if set(strategies_to_test) != set(test_strategies):
+                return summary
+            if config.evaluation.sst_bootstrap_resamples:
+                labels, scores = None, {}
+                for test_strategy in test_strategies:
+                    if test_strategy == "OS" or test_strategy[:2] in ("BS", "GO", "GS"):
+                        labels, scores[test_strategy] = sv_scores_fn(*sv_by_strategy[test_strategy])
+                record["sst_ci"] = sst_bootstrap_intervals(
+                    labels, scores, config.evaluation.sst_bootstrap_resamples, np.random.default_rng(run_idx)
+                ) if scores else {}
+                for key, (low, high) in record["sst_ci"].items():
+                    summary[f"run{run_idx}/final/SST_{key}_ci_low"] = low * 100
+                    summary[f"run{run_idx}/final/SST_{key}_ci_high"] = high * 100
+            if config.evaluation.sst_placebo:
+                gs_strategies = [test_strategy for test_strategy in test_strategies if test_strategy.startswith("GS")]
+                # The same windows and blocks as the first GS scoring, in another random order.
+                placebo_by_strategy = extract_embeddings_by_strategy(
+                    model, sv_eval_utterances, segment_length,
+                    {test_strategy: np.random.default_rng((run_idx, 1)) for test_strategy in gs_strategies},
+                    device=config.device, num_workers=config.training.num_workers, log_every=10_000,
+                ) if gs_strategies else {}
+                record["sst_placebo"] = {
+                    f"b{test_strategy[2:]}": sv_eval_fn(*placebo_by_strategy[test_strategy]) - record["sv"][test_strategy]
+                    for test_strategy in gs_strategies
+                }
+                for block, value in record["sst_placebo"].items():
+                    summary[f"run{run_idx}/final/SST_placebo_{block}"] = value * 100
             return summary
 
         def log_run(run_idx, record, summary):
@@ -641,7 +720,15 @@ def run_experiment(config, corpus=None, strategies=None):
             if run_idx in continued:
                 continue
             missing = [t for t in test_strategies if t not in completed_record["sv"]]
-            if missing:
+            quality_missing = (
+                (config.evaluation.sst_bootstrap_resamples and "sst_ci" not in completed_record)
+                or (config.evaluation.sst_placebo and "sst_placebo" not in completed_record)
+            )
+            if missing or quality_missing:
+                # The quality checks need every strategy's scores, which the
+                # manifest doesn't keep: score them all again.
+                if config.evaluation.sst_bootstrap_resamples or config.evaluation.sst_placebo:
+                    missing = list(test_strategies)
                 # Scored from the run's kept best weights (training.keep_checkpoints).
                 best_path = best_checkpoint_path(_checkpoint_path(config, train_strategy, run_idx))
                 if not best_path.exists():
@@ -744,6 +831,20 @@ def run_experiment(config, corpus=None, strategies=None):
                     results.setdefault(f"SST_{measure}", {})[(train_strategy, f"b{block_size}")] = stats
                     aggregate_summary[f"final/SST_{measure}_b{block_size}_mean"] = stats.mean * 100
                     aggregate_summary[f"final/SST_{measure}_b{block_size}_std"] = stats.std * 100
+        for block_size in BLOCK_SIZES:
+            block = f"b{block_size}"
+            placebo = [values[block] for values in raw_sst_placebo if block in values]
+            if placebo:
+                stats = _run_statistics(placebo)
+                results.setdefault("SST_placebo", {})[(train_strategy, block)] = stats
+                aggregate_summary[f"final/SST_placebo_{block}_mean"] = stats.mean * 100
+                aggregate_summary[f"final/SST_placebo_{block}_std"] = stats.std * 100
+            for measure in SST_MEASURES:
+                half_widths = [(high - low) / 2 for low, high in (ci[f"{measure}_{block}"] for ci in raw_sst_ci if f"{measure}_{block}" in ci)]
+                if half_widths:
+                    stats = _run_statistics(half_widths)
+                    results.setdefault(f"SST_{measure}_ci", {})[(train_strategy, block)] = stats
+                    aggregate_summary[f"final/SST_{measure}_{block}_ci_halfwidth_mean"] = stats.mean * 100
         if raw_sv_paper_comparable:
             paper_stats = _run_statistics(raw_sv_paper_comparable)
             results["SV_paper_comparable"][train_strategy] = paper_stats
@@ -773,10 +874,13 @@ def format_results(results):
     absent for VoxCeleb runs (Neururer et al. 2024 omits the SC task there),
     so only tasks actually present in `results` are reported. minDCF is
     already normalized and is reported unscaled. The SST_* tables report
-    sst_bracket's measures per block size b, also on a 0-100 scale."""
+    sst_bracket's measures per block size b, also on a 0-100 scale, with
+    `±` the trial-bootstrap 95% interval's half-width (mean over runs) when
+    computed; SST_placebo the GS placebo (see run_experiment's evaluate)."""
     lines = []
     tasks = [("SV", "SV (EER) [%]", 100, "test"), ("SV_minDCF", "SV (minDCF)", 1, "test"), ("SC", "SC (MR) [%]", 100, "test")]
     tasks += [(f"SST_{measure}", heading, 100, "block") for measure, heading in SST_MEASURES.items()]
+    tasks += [("SST_placebo", "SST placebo P(b) = EER(GS_b, 2nd seed) - EER(GS_b) [EER %-points]", 100, "block")]
     for task, heading, scale, column in tasks:
         if not results.get(task):
             continue
@@ -784,15 +888,22 @@ def format_results(results):
         # (see run_experiment) leaves the others absent from results[task].
         trained_strategies = list(dict.fromkeys(s for s, _ in results[task]))
         test_strategies = list(dict.fromkeys(t for _, t in results[task]))
-        lines.append(f"{heading}:")
-        header = "train\\" + column
-        lines.append(f"{header:<11} " + "  ".join(f"{s:>14}" for s in test_strategies))
+        ci = results.get(f"{task}_ci", {})
+        rows = {}
         for train_strategy in trained_strategies:
-            row = []
+            rows[train_strategy] = []
             for test_strategy in test_strategies:
                 stats = results[task][(train_strategy, test_strategy)]
-                row.append(f"{stats.mean * scale:6.2f} σ{stats.std * scale:5.2f}")
-            lines.append(f"{train_strategy:<11} " + "  ".join(row))
+                cell = f"{stats.mean * scale:6.2f} σ{stats.std * scale:5.2f}"
+                if (train_strategy, test_strategy) in ci:
+                    cell += f" ±{ci[(train_strategy, test_strategy)].mean * scale:5.2f}"
+                rows[train_strategy].append(cell)
+        width = max(14, *(len(cell) for row in rows.values() for cell in row))
+        lines.append(f"{heading}:")
+        header = "train\\" + column
+        lines.append(f"{header:<11} " + "  ".join(f"{s:>{width}}" for s in test_strategies))
+        for train_strategy, row in rows.items():
+            lines.append(f"{train_strategy:<11} " + "  ".join(f"{cell:>{width}}" for cell in row))
         lines.append("")
 
     if results.get("SV_paper_comparable"):

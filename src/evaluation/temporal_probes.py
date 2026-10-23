@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from ..models.conformer import RelativeMultiHeadSelfAttention
-from ..training.trainer import extract_embeddings_by_strategy
+from ..training.trainer import _eval_windows, extract_embeddings_by_strategy, resolved_utterances
 from .verification import cosine_similarity
 
 
@@ -14,7 +14,7 @@ def permutation_sensitivity(model, utterances, segment_length, strategies, devic
     embedding under a reference strategy R and under every strategy S. R is
     OS, except for GS{b}, whose reference is the matched control GO{b}. Each
     pair uses the same windows (see trainer._eval_windows) and differs only
-    in frame order; GO{b} and GS{b} also share the same artificial joins.
+    in frame order; GO{b} and GS{b} also have the same number of joins.
     Returns {strategy: mean distance}."""
     references = {strategy: f"GO{strategy[2:]}" if strategy.startswith("GS") else "OS" for strategy in strategies}
     rngs = {strategy: np.random.default_rng(seed) for strategy in (*references.values(), *strategies)}
@@ -23,6 +23,38 @@ def permutation_sensitivity(model, utterances, segment_length, strategies, devic
         strategy: float(np.mean(1.0 - cosine_similarity(embeddings[references[strategy]][0], embeddings[strategy][0])))
         for strategy in strategies
     }
+
+
+def join_discontinuity(utterances, segment_length, strategies, seed=0, hop_fraction=0.5):
+    """Euclidean distance between the two frames at every join of each
+    strategy's evaluation windows (as extract_embeddings would draw them):
+    every two consecutive window positions whose frames weren't consecutive
+    in the utterance. Also between every two consecutive frames of the OS
+    windows ("adjacent", the natural frame-to-frame change). Input-only, no
+    model: if GS{b}'s joins are rougher than GO{b}'s, the join artefacts
+    don't fully cancel in L(b). Blocks that stay original neighbours make
+    no join, and a shorter last block can land anywhere, so joins are found
+    by drawing every window a second time from the frame indices (with an
+    identically seeded Generator), not at multiples of b. The per-window
+    band means of segment normalization cancel in the differences. Returns
+    {strategy: 1-D array of distances}."""
+    step = max(int(hop_fraction * segment_length), 1)
+    rngs = {strategy: (np.random.default_rng(seed), np.random.default_rng(seed)) for strategy in strategies}
+    distances = {strategy: [] for strategy in ("adjacent", *strategies)}
+    for features, _ in resolved_utterances(utterances):
+        if features.shape[0] <= segment_length:
+            continue
+        num_windows = (features.shape[0] - segment_length) // step + 1
+        for window in _eval_windows(features, segment_length, step, num_windows, "OS", None):
+            distances["adjacent"].append(np.linalg.norm(np.diff(window, axis=0), axis=1))
+        frame_indices = np.arange(features.shape[0])[:, None]
+        for strategy in strategies:
+            windows = _eval_windows(features, segment_length, step, num_windows, strategy, rngs[strategy][0])
+            sources = _eval_windows(frame_indices, segment_length, step, num_windows, strategy, rngs[strategy][1])
+            for window, source in zip(windows, sources):
+                joins = np.flatnonzero(np.diff(source[:, 0]) != 1) + 1
+                distances[strategy].append(np.linalg.norm(window[joins] - window[joins - 1], axis=1))
+    return {strategy: np.concatenate(values) for strategy, values in distances.items()}
 
 
 def attention_offset_profiles(model, segments):
