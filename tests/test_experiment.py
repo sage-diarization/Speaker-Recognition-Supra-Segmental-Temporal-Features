@@ -1132,3 +1132,45 @@ def test_run_experiment_adds_the_quality_checks_to_completed_runs_without_retrai
     assert "sst_ci" in record and "sst_placebo" in record
     for strategy in config.evaluation.test_strategies:
         assert results["SV"][("OS", strategy)].mean == pytest.approx(first["SV"][("OS", strategy)].mean)
+
+
+def _pretrained_voxceleb_config():
+    # num_epochs 0: a pretrained model, only evaluated (an untrained CNN
+    # stands in for one here).
+    config = ExperimentConfig()
+    config.data.dataset = "VoxCeleb"
+    config.training.num_epochs = 0
+    config.training.strategies = ["OS"]
+    config.num_runs = 2
+    config.evaluation.test_strategies = ["OS", "BS16", "GO16", "GS16"]
+    config.evaluation.sst_placebo = True
+    return config
+
+
+def test_run_experiment_only_evaluates_a_pretrained_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: pytest.fail("trained"))
+    monkeypatch.setattr(experiment_module, "_lazy_featurize_split", lambda *args, **kwargs: pytest.fail("built a training set"))
+    config = _pretrained_voxceleb_config()
+
+    results = run_experiment(config, corpus=_make_voxceleb_stub_corpus(tmp_path))
+
+    manifest = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))
+    assert set(manifest["completed"]) == {0, 1}
+    assert all(record["num_epochs"] == 0 and "sst_placebo" in record for record in manifest["completed"].values())
+    assert ("OS", "b16") in results["SST_L"] and ("OS", "b16") in results["SST_U"]
+    # The embeddings kept for resuming are gone once each run is recorded.
+    assert not list(experiment_module._sweep_dir(config, "OS").glob("run*-embeddings"))
+
+
+def test_run_experiment_evaluates_a_completed_pretrained_run_under_new_test_strategies(monkeypatch, tmp_path):
+    corpus = _make_voxceleb_stub_corpus(tmp_path)
+    run_experiment(_pretrained_voxceleb_config(), corpus=corpus)
+
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: pytest.fail("trained"))
+    config = _pretrained_voxceleb_config()
+    config.evaluation.test_strategies = ["OS", "BS16", "GO16", "GS16", "SS"]
+    results = run_experiment(config, corpus=corpus)
+
+    manifest = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))
+    assert all("SS" in record["sv"] for record in manifest["completed"].values())
+    assert ("OS", "SS") in results["SV"]

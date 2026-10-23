@@ -10,6 +10,8 @@ from .features import (
     compute_linear_spectrogram,
     compute_mel_spectrogram,
     compute_w2vbert_features,
+    compute_wavlm_cnn_features,
+    compute_wespeaker_fbank,
     normalise_standardize,
 )
 from .lazy_features import resolve_features, utterance_length
@@ -41,6 +43,10 @@ def playback_sample_count(raw_sample_count, playback_speed):
 def featurize_waveform(waveform, transformation_config):
     if transformation_config.type == "w2vbert":
         return compute_w2vbert_features(waveform, transformation_config)
+    if transformation_config.type == "wespeaker_fbank":
+        return compute_wespeaker_fbank(waveform, transformation_config)
+    if transformation_config.type == "wavlm_cnn":
+        return compute_wavlm_cnn_features(waveform, transformation_config)
     if transformation_config.type == "linear":
         spectrogram = compute_linear_spectrogram(waveform, transformation_config)
     else:

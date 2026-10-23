@@ -1,5 +1,6 @@
 import copy
 import gc
+import json
 import multiprocessing
 import os
 import time
@@ -548,7 +549,7 @@ EMBEDDING_BATCH_FRAMES = 2048 * 94
 
 
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
-                                   log_every=None):
+                                   log_every=None, resume_dir=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
     each strategy to the Generator its windows are drawn with -- featurizing
     every utterance only once instead of once per strategy. Returns
@@ -563,7 +564,13 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
     (up to EMBEDDING_BATCH_FRAMES frames; only an utterance with more windows
     than that alone exceeds it) instead of one small pass per utterance and
     strategy; each window is embedded independently (eval mode), so this
-    changes at most float rounding."""
+    changes at most float rounding.
+
+    resume_dir, when given, keeps every finished chunk's embeddings there,
+    with the Generators' states after it: a call interrupted (e.g. a
+    requeued job) and made again with the same arguments continues after
+    the last finished chunk, with the same result. The caller deletes the
+    directory once it no longer needs it."""
     step = max(int(hop_fraction * segment_length), 1)
     batch_windows = max(EMBEDDING_BATCH_FRAMES // segment_length, 1)
     started = time.perf_counter()
@@ -578,9 +585,21 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
     model.eval()
     embeddings, labels = {strategy: [] for strategy in rngs}, []
     pending = {strategy: ([], []) for strategy in rngs}  # windows, window count per utterance
+    if resume_dir is not None:
+        resume_dir = Path(resume_dir)
+        resume_dir.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
         for chunk_start in range(0, len(utterances), EMBEDDING_CHUNK_UTTERANCES):
             chunk = utterances[chunk_start:chunk_start + EMBEDDING_CHUNK_UTTERANCES]
+            chunk_path = resume_dir / f"chunk{chunk_start}.npz" if resume_dir is not None else None
+            if chunk_path is not None and chunk_path.exists():
+                with np.load(chunk_path) as saved:
+                    labels.extend(saved["labels"])
+                    for strategy, rng in rngs.items():
+                        embeddings[strategy].extend(saved[f"embeddings_{strategy}"])
+                        rng.bit_generator.state = json.loads(str(saved[f"rng_{strategy}"]))
+                continue
+            chunk_first = {strategy: len(embeddings[strategy]) for strategy in rngs}, len(labels)
             for features, label in list(resolved_utterances(chunk, num_workers)):
                 length = features.shape[0]
                 if length <= segment_length:
@@ -594,6 +613,21 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                     windows.append(np.stack(_eval_windows(features, segment_length, step, num_windows, strategy, rng)))
                     counts.append(num_windows)
                 labels.append(label)
+            if chunk_path is not None:
+                # Embed what's pending, so the chunk is complete on disk.
+                for strategy, (windows, counts) in pending.items():
+                    if counts:
+                        embeddings[strategy].extend(embed(windows, counts))
+                        pending[strategy] = ([], [])
+                first_embedding, first_label = chunk_first
+                saved = {"labels": np.array(labels[first_label:])}
+                for strategy, rng in rngs.items():
+                    saved[f"embeddings_{strategy}"] = np.array(embeddings[strategy][first_embedding[strategy]:])
+                    saved[f"rng_{strategy}"] = np.array(json.dumps(rng.bit_generator.state))
+                # Written under a temporary name first: a chunk file on disk is always complete.
+                partial_path = chunk_path.with_suffix(".partial.npz")
+                np.savez(partial_path, **saved)
+                os.replace(partial_path, chunk_path)
             done = chunk_start + len(chunk)
             if log_every and (done // log_every) > (chunk_start // log_every):
                 print(f"==> Embedded {done}/{len(utterances)} utterances ({time.perf_counter() - started:.0f}s)", flush=True)

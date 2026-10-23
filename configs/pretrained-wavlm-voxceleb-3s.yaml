@@ -1,0 +1,57 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 3                # runs differ only in the seeds of the test draws (the model is fixed)
+
+# The SST bracket study (see src/README.md) of an externally pretrained
+# speaker-verification model, only evaluated (training.num_epochs 0), see
+# src/models/pretrained_*.py.
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 3.0    # test windows (the CNN/Conformer SST runs use 2 s)
+
+voxceleb:
+  root: "~/.cache/datasets/voxceleb1"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
+
+# The model's first frame grid, what the test draws shuffle (see TransformationConfig.type).
+# The checkpoint ("WavLM large, Fix pre-train: No" in
+# github.com/microsoft/UniSpeech/tree/main/downstreams/speaker_verification)
+# is on Google Drive only: download it by hand, from
+# https://drive.google.com/file/d/1-aE1NfzpRCLxA4GUxX9ITI3F9LlbtEGP
+transformation:
+  type: "wavlm_cnn"
+  frame_length_s: 0.025
+  frame_step_s: 0.02
+  wavlm_checkpoint: &checkpoint "~/.cache/sst-pretrained/wavlm_large_finetune.pth"
+
+model:
+  type: "WavLMECAPA"
+
+pretrained:
+  checkpoint: *checkpoint
+
+training:
+  num_epochs: 0            # pretrained: evaluation only
+  strategies: [OS]         # only names the sweep: nothing is trained
+  # Test utterances are featurized in worker processes -- match the SLURM
+  # jobs' --cpus-per-task.
+  num_workers: 32
+
+evaluation:
+  # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: the same blocks spread
+  # over the utterance, in original/shuffled order, for L(b)
+  # (see src/experiment.py's sst_bracket). One frame per 20 ms: blocks of
+  # 2/4/8/16/32 frames span 45/85/165/325/645 ms of signal.
+  test_strategies: [OS, SS, BS2, BS4, BS8, BS16, BS32, GO2, GS2, GO4, GS4, GO8, GS8, GO16, GS16, GO32, GS32]
+  # Quality checks of the bracket (see src/README.md's "SST bracket"): paired
+  # trial-bootstrap intervals, and every GS{b} scored with a second seed.
+  sst_bootstrap_resamples: 200
+  sst_placebo: true
+
+wandb:
+  run_postfix: 3s
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: [pretrained]

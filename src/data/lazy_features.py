@@ -60,6 +60,12 @@ def expected_frame_count(raw_sample_count, transformation):
     produce, matching src/data/features.py::_stft_magnitude's
     waveform.unfold(-1, frame_length, frame_step) framing -- computed from
     just the sample count, without decoding or transforming any audio."""
+    if transformation.type == "wavlm_cnn":
+        # WavLM's convolutional feature encoder: (kernel, stride) per layer.
+        frames = raw_sample_count
+        for kernel, stride in ((10, 5), (3, 2), (3, 2), (3, 2), (3, 2), (2, 2), (2, 2)):
+            frames = max(0, (frames - kernel) // stride + 1)
+        return frames
     frames = max(0, (raw_sample_count - transformation.frame_length) // transformation.frame_step + 1)
     # w2v-BERT 2.0 stacks every 2 frames, padding an odd last one.
     return -(-frames // 2) if transformation.type == "w2vbert" else frames

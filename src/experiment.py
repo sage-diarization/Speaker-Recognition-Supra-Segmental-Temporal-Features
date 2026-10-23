@@ -1,9 +1,11 @@
 import argparse
 import faulthandler
 import functools
+import hashlib
 import itertools
 import json
 import os
+import shutil
 import signal
 import statistics
 import time
@@ -208,8 +210,8 @@ def _lazy_featurize_split(corpus, split, transformation, playback_speed=1.0):
             length = expected_frame_count(playback_sample_count(corpus.raw_sample_count(path), playback_speed), transformation)
             compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, path, transformation, playback_speed)
             frames_fn = None
-            # w2vbert features are normalized per utterance, so not frame-local.
-            if load_samples is not None and playback_speed == 1 and transformation.type != "w2vbert":
+            # Self-normalizing features are normalized per utterance, so not frame-local.
+            if load_samples is not None and playback_speed == 1 and transformation.type not in transformation.SELF_NORMALIZING_TYPES:
                 frames_fn = functools.partial(featurize_frame_range, load_samples, path, transformation_config=transformation)
             utterances.append((LazyFeatures(compute_fn, length, frames_fn), label_map[speaker]))
     return utterances, label_map
@@ -381,8 +383,8 @@ def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
 
 
 def _log_eer_by_block(run, key, eers_by_strategy, segment_length, transformation, title):
-    """Line chart of SV EER [%] over the signal one shuffled block spans,
-    (b - 1) * frame step + frame length, for the block-shuffle test strategies
+    """Line chart of SV EER [%] over the signal one shuffled block spans
+    (TransformationConfig.block_span_s), for the block-shuffle test strategies
     (see _block_frames). eers_by_strategy maps each test strategy to one EER
     per series, e.g. {"OS": {"run0": 0.1, "mean": 0.1}, ...}."""
     points = sorted(
@@ -395,7 +397,7 @@ def _log_eer_by_block(run, key, eers_by_strategy, segment_length, transformation
     )
     if len(points) < 2:
         return
-    block_ms = [round(((frames - 1) * transformation.frame_step_s + transformation.frame_length_s) * 1000) for frames, _ in points]
+    block_ms = [round(transformation.block_span_s(frames) * 1000) for frames, _ in points]
     series = {name: [eers[name] * 100 for _, eers in points] for name in points[0][1]}
     tracking.log_line_series(run, key, block_ms, series, title, xname="signal spanned by one shuffled block [ms]")
 
@@ -413,6 +415,10 @@ def _sweep_dir(config, train_strategy):
 
 def _checkpoint_path(config, train_strategy, run_idx):
     return _sweep_dir(config, train_strategy) / f"run{run_idx}.pt"
+
+
+def _embedding_cache_dir(config, train_strategy, run_idx):
+    return _sweep_dir(config, train_strategy) / f"run{run_idx}-embeddings"
 
 
 def _manifest_path(config, train_strategy):
@@ -456,6 +462,12 @@ def run_experiment(config, corpus=None, strategies=None):
         raise ValueError(f"unknown draw strategies {unknown}, expected some of {list(DRAW_STRATEGIES)}")
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
+    if config.training.num_epochs == 0:
+        # Pretrained models are only evaluated: TF32 matrix multiplies make
+        # their large transformers several times faster on the GPU, changing
+        # embeddings only at float rounding level.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     dataset_name = config.data.dataset.lower()
     transformation = config.transformation
@@ -475,7 +487,11 @@ def run_experiment(config, corpus=None, strategies=None):
         # 04_evaluation/VOX-00_ORIGINAL.json), the same list otherwise (see
         # src/data/voxceleb.py).
         corpus = corpus or VoxCelebCorpus(config)
-        train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation, config.training.playback_speed)
+        if config.training.num_epochs == 0:
+            # Pretrained models, only evaluated (see the run loop below).
+            train_utterances, train_label_map = [], {}
+        else:
+            train_utterances, train_label_map = _lazy_featurize_split(corpus, "TRAIN", transformation, config.training.playback_speed)
         sv_eval_utterances = _lazy_trial_utterances(corpus, corpus.trial_pairs, transformation)
         if corpus.dev_trial_pairs is corpus.trial_pairs:
             dev_utterances = sv_eval_utterances
@@ -635,6 +651,16 @@ def run_experiment(config, corpus=None, strategies=None):
                 raw_sst_placebo.append(record["sst_placebo"])
             raw_run_indices.append(run_idx)
 
+        def embedding_resume_dir(run_idx, name, strategies_to_test):
+            """Where a pretrained model's evaluation keeps its finished
+            chunks of embeddings (see extract_embeddings_by_strategy), so a
+            requeued job resumes within the run; None for trained models.
+            Named by the strategies, so another set never reuses them."""
+            if config.training.num_epochs > 0:
+                return None
+            key = hashlib.sha1(",".join(strategies_to_test).encode()).hexdigest()[:10]
+            return _embedding_cache_dir(config, train_strategy, run_idx) / f"{name}-{key}"
+
         def evaluate(model, run_idx, record, strategies_to_test):
             """Scores model under strategies_to_test into record (raw [0, 1]
             fractions) and returns the matching summary entries (percentages,
@@ -656,6 +682,7 @@ def run_experiment(config, corpus=None, strategies=None):
                 model, sv_eval_utterances, segment_length,
                 {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
                 device=config.device, num_workers=config.training.num_workers, log_every=10_000,
+                resume_dir=embedding_resume_dir(run_idx, "test", strategies_to_test),
             )
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
@@ -699,6 +726,7 @@ def run_experiment(config, corpus=None, strategies=None):
                     model, sv_eval_utterances, segment_length,
                     {test_strategy: np.random.default_rng((run_idx, 1)) for test_strategy in gs_strategies},
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
+                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies),
                 ) if gs_strategies else {}
                 record["sst_placebo"] = {
                     f"b{test_strategy[2:]}": sv_eval_fn(*placebo_by_strategy[test_strategy]) - record["sv"][test_strategy]
@@ -729,19 +757,22 @@ def run_experiment(config, corpus=None, strategies=None):
                 # manifest doesn't keep: score them all again.
                 if config.evaluation.sst_bootstrap_resamples or config.evaluation.sst_placebo:
                     missing = list(test_strategies)
-                # Scored from the run's kept best weights (training.keep_checkpoints).
+                # Scored from the run's kept best weights (training.keep_checkpoints),
+                # or, for a pretrained model (num_epochs 0), from its own.
                 best_path = best_checkpoint_path(_checkpoint_path(config, train_strategy, run_idx))
-                if not best_path.exists():
+                if config.training.num_epochs > 0 and not best_path.exists():
                     raise ValueError(
                         f"{manifest_path} has completed runs never evaluated under {missing}, and their best "
                         "checkpoint is gone; set a different wandb.run_postfix to train a fresh sweep"
                     )
                 print(f"==> Evaluating completed run {run_idx} under {missing}", flush=True)
                 model = build_model(config)
-                model.load_state_dict(torch.load(best_path, map_location=config.device)["model_state_dict"])
+                if config.training.num_epochs > 0:
+                    model.load_state_dict(torch.load(best_path, map_location=config.device)["model_state_dict"])
                 model.to(config.device)
                 log_run(run_idx, completed_record, evaluate(model, run_idx, completed_record, missing))
                 _save_manifest(manifest_path, manifest)
+                shutil.rmtree(_embedding_cache_dir(config, train_strategy, run_idx), ignore_errors=True)
             collect(run_idx, completed_record)
 
         for run_idx in range(config.num_runs):
@@ -749,6 +780,20 @@ def run_experiment(config, corpus=None, strategies=None):
                 continue
             if run_idx in continued:
                 print(f"==> Continuing run {run_idx} to {config.training.num_epochs} epochs", flush=True)
+
+            if config.training.num_epochs == 0:
+                # A pretrained model (src/models/pretrained_*.py), only
+                # evaluated: its runs differ only in the test draws' seeds.
+                record = {"sv": {}, "sv_min_dcf": {}, "num_epochs": 0}
+                if sc_utterances is not None:
+                    record["sc"] = {}
+                summary = evaluate(build_model(config).to(config.device), run_idx, record, test_strategies)
+                log_run(run_idx, record, summary)
+                collect(run_idx, record)
+                manifest["completed"][run_idx] = record
+                _save_manifest(manifest_path, manifest)
+                shutil.rmtree(_embedding_cache_dir(config, train_strategy, run_idx), ignore_errors=True)
+                continue
 
             train_segment_length = config.data.train_segment_length(transformation, config.training.playback_speed)
             augment_fn = None

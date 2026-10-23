@@ -17,8 +17,18 @@ class TransformationConfig:
     # or "w2vbert" (w2v-BERT 2.0's own front-end, see src/models/w2vbert.py:
     # Kaldi 80-bin log-fbank, 25 ms / 10 ms, per-bin utterance normalization,
     # every 2 frames stacked into one 160-dim frame -- so one frame per 20 ms;
-    # needs frame_length_s 0.025, frame_step_s 0.01, sample_rate 16000).
+    # needs frame_length_s 0.025, frame_step_s 0.01, sample_rate 16000),
+    # or the first frame grids of the pretrained models in
+    # src/models/pretrained_*.py: "wespeaker_fbank" (WeSpeaker's 80-bin
+    # Kaldi fbank, hamming, utterance mean-normalized; needs frame_length_s
+    # 0.025, frame_step_s 0.01) or "wavlm_cnn" (WavLM's convolutional feature
+    # encoder output, 512-dim, one frame per 20 ms spanning 25 ms; needs
+    # frame_length_s 0.025, frame_step_s 0.02, and wavlm_checkpoint).
     type: str = "mel"
+    # type "wavlm_cnn" only: the fine-tuned WavLM Large + ECAPA-TDNN
+    # checkpoint (src/models/pretrained_wavlm.py) whose feature encoder
+    # computes the frames.
+    wavlm_checkpoint: str = ""
     # "hann" (default) or "hamming" -- ResNet's front-end uses hamming
     # (context/src/setup/utils.py's window_map).
     window: str = "hann"
@@ -27,14 +37,25 @@ class TransformationConfig:
     # context/src). "segment": each band's mean over the model's input segment
     # (training segment or evaluation window) is subtracted, removing
     # recording gain and channel but keeping the energy contour. "none": no
-    # normalization. Not applied for type "w2vbert", which normalizes itself.
+    # normalization. Not applied for the types in SELF_NORMALIZING_TYPES,
+    # which normalize themselves.
     normalization: str = "frame"
+
+    # Front-ends that bring their own normalization, applied per utterance
+    # (so not frame-local): featurize_waveform returns them as they are.
+    SELF_NORMALIZING_TYPES = ("w2vbert", "wespeaker_fbank", "wavlm_cnn")
 
     def __post_init__(self):
         if self.normalization not in ("frame", "segment", "none"):
             raise ValueError(f"normalization must be 'frame', 'segment' or 'none', got {self.normalization!r}")
-        if self.type == "w2vbert" and (self.sample_rate, self.frame_length, self.frame_step) != (16000, 400, 160):
-            raise ValueError("type 'w2vbert' needs sample_rate 16000, frame_length_s 0.025, frame_step_s 0.01")
+        required_framing = {"w2vbert": (400, 160), "wespeaker_fbank": (400, 160), "wavlm_cnn": (400, 320)}
+        if self.type in required_framing and (self.sample_rate, self.frame_length, self.frame_step) != (16000, *required_framing[self.type]):
+            length, step = required_framing[self.type]
+            raise ValueError(
+                f"type {self.type!r} needs sample_rate 16000, frame_length_s {length / 16000}, frame_step_s {step / 16000}"
+            )
+        if self.type == "wavlm_cnn" and not self.wavlm_checkpoint:
+            raise ValueError("type 'wavlm_cnn' needs wavlm_checkpoint")
 
     @property
     def frame_length(self):
@@ -49,10 +70,21 @@ class TransformationConfig:
         steps = int((self.sample_rate + self.frame_step - self.frame_length) / self.frame_step)
         return -(-steps // 2) if self.type == "w2vbert" else steps
 
+    def block_span_s(self, frames):
+        """Seconds of signal spanned by `frames` consecutive feature frames.
+        A w2vbert frame stacks 2 fbank frames, so it steps 2 * frame_step_s."""
+        if self.type == "w2vbert":
+            frames = 2 * frames
+        return (frames - 1) * self.frame_step_s + self.frame_length_s
+
     @property
     def num_freqs(self):
         if self.type == "w2vbert":
             return 160
+        if self.type == "wespeaker_fbank":
+            return 80
+        if self.type == "wavlm_cnn":
+            return 512
         return self.n_mels if self.type == "mel" else self.nfft // 2 + 1
 
 
@@ -202,6 +234,15 @@ class W2VBertConfig:
 
     # Hugging Face model id (or local path) of the pretrained checkpoint.
     pretrained: str = "facebook/w2v-bert-2.0"
+
+
+@dataclass
+class PretrainedConfig:
+    """Externally trained speaker-verification models, only evaluated
+    (training.num_epochs 0), see src/models/pretrained_*.py."""
+
+    # Local path, or "<Hugging Face repo id>:<file in it>".
+    checkpoint: str = ""
 
 
 @dataclass
@@ -361,6 +402,7 @@ class ExperimentConfig:
     resnet: ResNetConfig = field(default_factory=ResNetConfig)
     fresnet: FResNetConfig = field(default_factory=FResNetConfig)
     w2vbert: W2VBertConfig = field(default_factory=W2VBertConfig)
+    pretrained: PretrainedConfig = field(default_factory=PretrainedConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -393,6 +435,7 @@ class ExperimentConfig:
             ("resnet", ResNetConfig),
             ("fresnet", FResNetConfig),
             ("w2vbert", W2VBertConfig),
+            ("pretrained", PretrainedConfig),
             ("loss", LossConfig),
             ("optimizer", OptimizerConfig),
             ("training", TrainingConfig),

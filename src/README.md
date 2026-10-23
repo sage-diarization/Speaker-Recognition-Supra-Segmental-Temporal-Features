@@ -361,6 +361,32 @@ as testing all strategies at once. Re-submitting the stage jobs therefore
 only adds the new columns. The invariant models must give L(b) = 0, which
 makes them a sanity check.
 
+#### Pretrained state-of-the-art models
+
+The same bracket for three externally trained speaker-verification models,
+all trained on VoxCeleb2 only, evaluated with `training.num_epochs: 0`.
+Nothing is trained, and the 3 runs differ only in the seeds of the test
+draws. Each model is split where frames first get mixed, and the test draws
+shuffle the frames at that split, so b counts each model's own frames. The
+configs choose b so that one block spans the same signal across models.
+
+| Model | Shuffled frames | Block spans [ms] | Configs |
+|---|---|---|---|
+| WeSpeaker ResNet34-LM (`src/models/pretrained_wespeaker.py`) | 80-bin Kaldi fbank, 10 ms | 55–655 (b = 4–64) | `pretrained-resnet34-voxceleb-{2,3}s.yaml` |
+| w2v-BERT 2.0 Adapter-MFA (`src/models/pretrained_w2vbert.py`) | 160-dim stacked fbank, 20 ms | 55–655 (b = 2–32) | `pretrained-w2vbert-voxceleb-{2,3}s.yaml` |
+| WavLM Large + ECAPA-TDNN (`src/models/pretrained_wavlm.py`) | WavLM's conv feature encoder output, 20 ms | 45–645 (b = 2–32) | `pretrained-wavlm-voxceleb-{2,3}s.yaml` |
+
+The WavLM checkpoint is on Google Drive only and has to be downloaded by
+hand (see its config). The other two are fetched from the Hugging Face Hub.
+The SLURM jobs are `slurm/pretrained-*.submit`. Run the
+`pretrained-*-voxceleb-vox1o` jobs first: one run of the 2 s setup on
+VoxCeleb1-O, to check the models and estimate the VoxCeleb1-H run time.
+
+These evaluations use TF32 matrix multiplies. A run's finished chunks of
+embeddings are kept in `<checkpoint_dir>/<sweep>/run{idx}-embeddings/`, so a
+requeued job continues within the run. The directory is deleted once the
+run is recorded in the manifest.
+
 ## Getting TIMIT
 
 TIMIT is an LDC-licensed corpus (catalog.ldc.upenn.edu/LDC93S1) — there is

@@ -3,6 +3,7 @@ import functools
 import numpy as np
 import torch
 import torchaudio
+import torchaudio.compliance.kaldi
 
 
 def _stft_magnitude(waveform, config):
@@ -65,6 +66,35 @@ def compute_w2vbert_features(waveform, config):
     utterance), so featurize_waveform applies no DRC/standardization."""
     output = _w2vbert_feature_extractor()(waveform, sampling_rate=config.sample_rate, return_tensors="np")
     return output["input_features"][0]
+
+
+def compute_wespeaker_fbank(waveform, config):
+    """WeSpeaker's input features, (frames, 80): Kaldi fbank of the
+    16-bit-scaled waveform, hamming window, no dither (wespeaker/cli/speaker.py's
+    compute_features), minus its mean over the utterance (CMN)."""
+    if isinstance(waveform, np.ndarray):
+        waveform = torch.from_numpy(waveform).float()
+    fbank = torchaudio.compliance.kaldi.fbank(
+        waveform.unsqueeze(0) * (1 << 15), num_mel_bins=80, frame_length=25, frame_shift=10,
+        dither=0.0, sample_frequency=config.sample_rate, window_type="hamming",
+    )
+    return (fbank - fbank.mean(dim=0)).numpy()
+
+
+def compute_wavlm_cnn_features(waveform, config):
+    """WavLM's convolutional feature encoder output, (frames, 512), of the
+    utterance layer-normalized as a whole (WavLM Large's cfg.normalize) --
+    the last representation before the transformer mixes frames, see
+    src/models/pretrained_wavlm.py."""
+    # Imported lazily: the encoder weights come from the WavLM checkpoint.
+    from ..models.pretrained_wavlm import wavlm_feature_encoder
+
+    if isinstance(waveform, np.ndarray):
+        waveform = torch.from_numpy(waveform).float()
+    with torch.no_grad():
+        waveform = torch.nn.functional.layer_norm(waveform, waveform.shape)
+        frames = wavlm_feature_encoder(config.wavlm_checkpoint)(waveform.unsqueeze(0))  # (1, 512, frames)
+    return frames[0].T.numpy()
 
 
 def apply_drc(spectrogram):

@@ -136,6 +136,30 @@ def test_extract_embeddings_by_strategy_matches_separate_calls_per_strategy():
     assert list(labels) == ["utt0", "utt2", "utt3"]
 
 
+def test_extract_embeddings_by_strategy_resumes_after_the_last_finished_chunk(monkeypatch, tmp_path):
+    from src.training import trainer
+
+    monkeypatch.setattr(trainer, "EMBEDDING_CHUNK_UTTERANCES", 2)
+    utterances, segment_length, strategies = _lazy_utterances(), 8, ("OS", "SS", "BS2")
+
+    def extract(utterances, resume_dir=None):
+        rngs = {strategy: np.random.default_rng(3) for strategy in strategies}
+        return trainer.extract_embeddings_by_strategy(_MeanModel(), utterances, segment_length, rngs, resume_dir=resume_dir)
+
+    uninterrupted = extract(utterances)
+    extract(utterances, tmp_path)
+    # As if the job was stopped during the second chunk: only the first is on
+    # disk, and its utterances must not be featurized again.
+    (tmp_path / "chunk2.npz").unlink()
+    from src.data.lazy_features import LazyFeatures
+
+    first_chunk = [(LazyFeatures(lambda: pytest.fail("featurized again"), entry.length), label) for entry, label in utterances[:2]]
+    resumed = extract(first_chunk + utterances[2:], tmp_path)
+
+    for strategy in strategies:
+        np.testing.assert_array_equal(resumed[strategy][0], uninterrupted[strategy][0])
+        np.testing.assert_array_equal(resumed[strategy][1], uninterrupted[strategy][1])
+
 def test_extract_embeddings_with_workers_matches_in_process_featurization():
     utterances, segment_length = _lazy_utterances(), 8
     for strategy in ("OS", "SS", "SU"):
