@@ -208,7 +208,7 @@ class WavLMECAPA(nn.Module):
 def build_wavlm_ecapa(config):
     state = _load_checkpoint_state(config.pretrained.checkpoint)
     model = WavLMECAPA(_load_wavlm(state))
-    head = {k: v for k, v in state.items() if not k.startswith("feature_extract.")}
+    head = {k: v for k, v in state.items() if not k.startswith(("feature_extract.", "loss_calculator."))}
     missing, unexpected = model.load_state_dict(head, strict=False)
     missing = [k for k in missing if not k.startswith(("feature_projection.", "encoder."))]
     if missing or unexpected:
