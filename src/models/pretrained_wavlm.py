@@ -90,8 +90,18 @@ def _load_checkpoint_state(spec):
 def wavlm_feature_encoder(checkpoint):
     """The checkpoint's convolutional feature encoder, (batch, samples) ->
     (batch, 512, frames), loaded once per process (DataLoader workers each
-    load their own)."""
-    return _load_wavlm(_load_checkpoint_state(checkpoint)).feature_extractor.requires_grad_(False).eval()
+    load their own). Built on its own, not cut out of a whole WavLMModel:
+    32 workers each materializing the 316M-parameter model got the job
+    OOM-killed."""
+    from transformers import WavLMConfig
+    from transformers.models.wavlm.modeling_wavlm import WavLMFeatureEncoder
+
+    prefix = "feature_extractor."
+    state = {key[len(prefix):]: value for key, value in _wavlm_state_dict(_load_checkpoint_state(checkpoint)).items()
+             if key.startswith(prefix)}
+    encoder = WavLMFeatureEncoder(WavLMConfig.from_pretrained(WAVLM_CONFIG))
+    encoder.load_state_dict(state)  # strict: the checkpoint must cover the whole encoder
+    return encoder.requires_grad_(False).eval()
 
 
 class Conv1dReluBn(nn.Module):
