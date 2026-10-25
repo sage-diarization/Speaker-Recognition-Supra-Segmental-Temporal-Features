@@ -1,0 +1,28 @@
+#!/bin/bash
+#SBATCH --time=1440
+#SBATCH --job-name=sst/check-go-gaps-w2vbert-3s
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+# SV EER of OS, GO2 and GS2 per trial group (by the gaps of the trials'
+# utterances), see src/check_go_gaps.py.
+
+source slurm/install.submit
+source slurm/stage-voxceleb.submit
+source slurm/secrets.submit
+
+echo "Start check..."
+python3 -u -m src.check_go_gaps \
+	--config configs/pretrained-w2vbert-voxceleb-3s.yaml \
+	--block-size 2 \
+	--score
+
+echo "Done."
