@@ -17,6 +17,7 @@ import argparse
 from collections import Counter
 
 import numpy as np
+import torch
 
 from .config import ExperimentConfig
 from .data.voxceleb import VoxCelebCorpus
@@ -77,6 +78,10 @@ def main():
         return
 
     config.device = resolve_device(config.device)
+    # As run_experiment does for pretrained models: TF32 makes their large
+    # transformers several times faster on the GPU.
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     model = build_model(config).to(config.device)
     strategies = ("OS", f"GO{args.block_size}", f"GS{args.block_size}")
     embeddings = extract_embeddings_by_strategy(
