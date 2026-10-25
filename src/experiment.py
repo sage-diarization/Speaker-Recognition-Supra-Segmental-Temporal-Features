@@ -41,6 +41,7 @@ from .evaluation.verification import (
     indexed_trial_equal_error_rate,
     indexed_trial_min_dcf,
     indexed_trial_scores,
+    min_dcf,
     trial_list_equal_error_rate,
     trial_list_min_dcf,
     trial_list_scores,
@@ -358,6 +359,21 @@ def sst_bracket(eers, block_size):
     return measures
 
 
+def _gapped(strategy):
+    """Whether a test strategy is GO{b}/GS{b}, scored only on the trials
+    whose utterances are long enough for its fixed gaps."""
+    return strategy.startswith(("GO", "GS"))
+
+
+def _scored_trials(labels, scores):
+    """The trials with a score: a GO{b}/GS{b} embedding is NaN for an
+    utterance too short for the strategy's fixed gaps (see
+    trainer._eval_windows), and so are its trials' scores."""
+    labels, scores = np.asarray(labels), np.asarray(scores)
+    keep = np.isfinite(scores)
+    return labels[keep], scores[keep]
+
+
 def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
     """Percentile intervals of sst_bracket's measures over num_resamples
     resamples of the trials with replacement. scores maps test strategies
@@ -369,12 +385,16 @@ def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
     Only the trial sampling is resampled: the trained model and the random
     block orders stay fixed (see the placebo and the SD over runs for
     those). Trials sharing an utterance aren't independent, so the
-    intervals are somewhat too narrow."""
+    intervals are somewhat too narrow. Trials without a score (GO{b}/GS{b},
+    see _scored_trials) are left out of their strategy's EER."""
     labels = np.asarray(labels)
     samples = {}
     for _ in range(num_resamples):
         indices = rng.integers(0, len(labels), len(labels))
-        eers = {strategy: eer_from_scores(labels[indices], np.asarray(values)[indices]) for strategy, values in scores.items()}
+        eers = {
+            strategy: eer_from_scores(*_scored_trials(labels[indices], np.asarray(values)[indices]))
+            for strategy, values in scores.items()
+        }
         for block_size in BLOCK_SIZES:
             for measure, value in sst_bracket(eers, block_size).items():
                 samples.setdefault(f"{measure}_b{block_size}", []).append(value)
@@ -460,6 +480,10 @@ def run_experiment(config, corpus=None, strategies=None):
     unknown = [s for s in (*strategies, *test_strategies) if s not in DRAW_STRATEGIES]
     if unknown:
         raise ValueError(f"unknown draw strategies {unknown}, expected some of {list(DRAW_STRATEGIES)}")
+    if any(_gapped(s) for s in strategies):
+        raise ValueError("GO{b}/GS{b} are test strategies only, they can't be trained on")
+    gap = config.sst_gap_frames
+    gapped_strategies = [s for s in test_strategies if _gapped(s)]
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
     if config.training.num_epochs == 0:
@@ -658,7 +682,7 @@ def run_experiment(config, corpus=None, strategies=None):
             Named by the strategies, so another set never reuses them."""
             if config.training.num_epochs > 0:
                 return None
-            key = hashlib.sha1(",".join(strategies_to_test).encode()).hexdigest()[:10]
+            key = hashlib.sha1(f"{','.join(strategies_to_test)};gap={gap}".encode()).hexdigest()[:10]
             return _embedding_cache_dir(config, train_strategy, run_idx) / f"{name}-{key}"
 
         def evaluate(model, run_idx, record, strategies_to_test):
@@ -674,7 +698,11 @@ def run_experiment(config, corpus=None, strategies=None):
             quality checks, when configured: paired trial-bootstrap intervals
             (evaluation.sst_bootstrap_resamples) and the placebo, every GS{b}
             scored again with a second permutation seed
-            (evaluation.sst_placebo)."""
+            (evaluation.sst_placebo).
+
+            GO{b}/GS{b} are scored only on the trials whose utterances are
+            long enough for their fixed gaps (see _scored_trials); the
+            number of those trials is logged as SV_trials_test-{strategy}."""
             summary = {}
             started = time.perf_counter()
             print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
@@ -682,26 +710,37 @@ def run_experiment(config, corpus=None, strategies=None):
                 model, sv_eval_utterances, segment_length,
                 {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
                 device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                resume_dir=embedding_resume_dir(run_idx, "test", strategies_to_test),
+                resume_dir=embedding_resume_dir(run_idx, "test", strategies_to_test), gap=gap,
             )
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
                 sc_by_strategy = extract_embeddings_by_strategy(
                     model, sc_utterances, segment_length,
                     {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
-                    device=config.device, num_workers=config.training.num_workers,
+                    device=config.device, num_workers=config.training.num_workers, gap=gap,
                 )
+            if any(_gapped(test_strategy) for test_strategy in strategies_to_test):
+                record["sst_gap_frames"] = gap
             for test_strategy in strategies_to_test:
                 sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
-                eer = sv_eval_fn(sv_embeddings, sv_labels)
+                if _gapped(test_strategy):
+                    labels, scores = _scored_trials(*sv_scores_fn(sv_embeddings, sv_labels))
+                    eer, dcf = eer_from_scores(labels, scores), min_dcf(labels, scores)
+                    print(f"==> {test_strategy}: scored {len(labels)} trials long enough for its gaps", flush=True)
+                    summary[f"run{run_idx}/final/SV_trials_test-{test_strategy}"] = len(labels)
+                else:
+                    eer, dcf = sv_eval_fn(sv_embeddings, sv_labels), sv_min_dcf_fn(sv_embeddings, sv_labels)
                 record["sv"][test_strategy] = eer
                 summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
-                dcf = sv_min_dcf_fn(sv_embeddings, sv_labels)
                 record.setdefault("sv_min_dcf", {})[test_strategy] = dcf
                 summary[f"run{run_idx}/final/SV_minDCF_test-{test_strategy}"] = dcf
 
                 if sc_utterances is not None:
                     sc_embeddings, sc_labels = sc_by_strategy[test_strategy]
+                    if _gapped(test_strategy):
+                        # Only the utterances long enough for the gaps.
+                        keep = np.isfinite(sc_embeddings).all(axis=1)
+                        sc_embeddings, sc_labels = sc_embeddings[keep], np.asarray(sc_labels)[keep]
                     mr = best_misclassification_rate(sc_embeddings, sc_labels)
                     record["sc"][test_strategy] = mr
                     summary[f"run{run_idx}/final/SC_MR_test-{test_strategy}"] = mr * 100
@@ -726,10 +765,11 @@ def run_experiment(config, corpus=None, strategies=None):
                     model, sv_eval_utterances, segment_length,
                     {test_strategy: np.random.default_rng((run_idx, 1)) for test_strategy in gs_strategies},
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies),
+                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), gap=gap,
                 ) if gs_strategies else {}
                 record["sst_placebo"] = {
-                    f"b{test_strategy[2:]}": sv_eval_fn(*placebo_by_strategy[test_strategy]) - record["sv"][test_strategy]
+                    f"b{test_strategy[2:]}": eer_from_scores(*_scored_trials(*sv_scores_fn(*placebo_by_strategy[test_strategy])))
+                    - record["sv"][test_strategy]
                     for test_strategy in gs_strategies
                 }
                 for block, value in record["sst_placebo"].items():
@@ -747,6 +787,15 @@ def run_experiment(config, corpus=None, strategies=None):
         for run_idx, completed_record in manifest["completed"].items():
             if run_idx in continued:
                 continue
+            if gapped_strategies and completed_record.get("sst_gap_frames") != gap:
+                # GO/GS scored with another gap, or with the blocks spread
+                # over the whole utterance (before fixed gaps): score them
+                # again, and the quality checks that use them.
+                for key in ("sv", "sv_min_dcf", "sc"):
+                    for test_strategy in gapped_strategies:
+                        completed_record.get(key, {}).pop(test_strategy, None)
+                completed_record.pop("sst_ci", None)
+                completed_record.pop("sst_placebo", None)
             missing = [t for t in test_strategies if t not in completed_record["sv"]]
             quality_missing = (
                 (config.evaluation.sst_bootstrap_resamples and "sst_ci" not in completed_record)

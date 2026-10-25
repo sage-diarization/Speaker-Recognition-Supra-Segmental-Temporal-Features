@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from .. import tracking
 from ..data.lazy_features import resolve_features
-from ..data.segments import MIXTURES, gapped_segment, shuffle_blocks
+from ..data.segments import MIXTURES, gapped_segment, gapped_span, shuffle_blocks
 from ..evaluation.verification import equal_error_rate
 
 
@@ -455,7 +455,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     return history, paper_comparable_best
 
 
-def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng):
+def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap=None):
     """Builds the num_windows hop-window segments for one utterance, matching
     context/src/setup/setup.py's precomputed EVAL distributions -- the ones
     context/src/generator/sampler.py::load_test actually reads at test time
@@ -481,11 +481,17 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     mixture (MIX, RANDBS, see src/data/segments.py's MIXTURES) treats each
     window by one of its strategies, picked at random per window.
 
-    GO{b}/GS{b} windows instead spread their blocks over the whole utterance
-    (src/data/segments.py::gapped_segment), the num_windows windows at
-    evenly-spaced positions through its slack. The positions use no
-    randomness, so GO{b} and GS{b} take the same blocks in every window and
-    differ only in GS{b}'s block order."""
+    GO{b}/GS{b} windows instead take b-frame blocks with fixed gaps of `gap`
+    frames between them (src/data/segments.py::gapped_segment), the
+    num_windows windows at evenly-spaced positions through the utterance.
+    The positions use no randomness, so GO{b} and GS{b} take the same
+    blocks in every window and differ only in GS{b}'s block order. An
+    utterance too short for the gaps gets no windows (an empty list)."""
+    if draw_strategy.startswith(("GO", "GS")):
+        if gap is None:
+            raise ValueError(f"{draw_strategy} needs the gap between its blocks")
+        if features.shape[0] < gapped_span(segment_length, int(draw_strategy[2:]), gap):
+            return []
     if draw_strategy == "SU":
         length = features.shape[0]
         return [features[rng.integers(0, length, segment_length)] for _ in range(num_windows)]
@@ -496,7 +502,7 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
             strategy = MIXTURES[strategy][rng.integers(len(MIXTURES[strategy]))]
         if strategy.startswith(("GO", "GS")):
             block_size = int(strategy[2:])
-            segment = gapped_segment(features, segment_length, block_size, i / max(num_windows - 1, 1))
+            segment = gapped_segment(features, segment_length, block_size, gap, i / max(num_windows - 1, 1))
             if strategy.startswith("GS"):
                 segment = shuffle_blocks(segment, block_size, rng)
             segments.append(segment)
@@ -549,13 +555,15 @@ EMBEDDING_BATCH_FRAMES = 2048 * 94
 
 
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
-                                   log_every=None, resume_dir=None):
+                                   log_every=None, resume_dir=None, gap=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
     each strategy to the Generator its windows are drawn with -- featurizing
     every utterance only once instead of once per strategy. Returns
     {strategy: (embeddings, labels)}, each equal to a separate
     extract_embeddings call with that strategy and Generator. log_every
-    prints progress every that many utterances.
+    prints progress every that many utterances. gap is the GO{b}/GS{b}
+    strategies' gap between blocks (see _eval_windows); an utterance too
+    short for it gets a NaN embedding under them.
 
     Utterances are featurized EMBEDDING_CHUNK_UTTERANCES at a time, and the
     DataLoader workers have exited before that chunk's forward passes run:
@@ -577,10 +585,14 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
 
     def embed(windows, counts):
         """Per-utterance mean backend embedding, for consecutive utterances
-        whose windows (counts[i] each) are concatenated in `windows`."""
-        tensor = torch.from_numpy(np.concatenate(windows)).float().unsqueeze(1).to(device)
+        whose windows (counts[i] each) are concatenated in `windows`; NaN
+        for one without windows. If none has any, one blank window is
+        embedded only to learn the embedding's size."""
+        blank = [] if windows else [np.zeros((1, segment_length, num_features), dtype=np.float32)]
+        tensor = torch.from_numpy(np.concatenate(windows + blank)).float().unsqueeze(1).to(device)
         backend = model(tensor).backend
-        return [part.mean(dim=0).cpu().numpy() for part in torch.split(backend, counts)]
+        parts = torch.split(backend, [*counts, len(blank)])[:len(counts)]
+        return [part.mean(dim=0).cpu().numpy() for part in parts]
 
     model.eval()
     embeddings, labels = {strategy: [] for strategy in rngs}, []
@@ -601,7 +613,7 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                 continue
             chunk_first = {strategy: len(embeddings[strategy]) for strategy in rngs}, len(labels)
             for features, label in list(resolved_utterances(chunk, num_workers)):
-                length = features.shape[0]
+                length, num_features = features.shape
                 if length <= segment_length:
                     continue
                 num_windows = (length - segment_length) // step + 1
@@ -610,8 +622,10 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                     if counts and sum(counts) + num_windows > batch_windows:
                         embeddings[strategy].extend(embed(windows, counts))
                         windows, counts = pending[strategy] = ([], [])
-                    windows.append(np.stack(_eval_windows(features, segment_length, step, num_windows, strategy, rng)))
-                    counts.append(num_windows)
+                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap)
+                    if segments:
+                        windows.append(np.stack(segments))
+                    counts.append(len(segments))
                 labels.append(label)
             if chunk_path is not None:
                 # Embed what's pending, so the chunk is complete on disk.

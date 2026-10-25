@@ -1095,6 +1095,49 @@ def test_sst_bootstrap_intervals_are_paired_and_contain_the_point_estimate():
     assert low > 0
 
 
+def test_sst_bootstrap_intervals_score_go_and_gs_only_on_their_trials_with_scores():
+    rng = np.random.default_rng(0)
+    labels = np.repeat([1, 0], 200)
+    os_scores = rng.normal(labels * 1.5, 1.0)
+    # Every third trial has an utterance too short for the gaps.
+    gapped = np.where(np.arange(400) % 3 == 0, np.nan, os_scores - 0.3 * labels)
+    scores = {"OS": os_scores, "GO16": gapped, "GS16": gapped}
+    intervals = experiment_module.sst_bootstrap_intervals(labels, scores, 50, np.random.default_rng(1))
+    assert intervals["L_b16"] == (0.0, 0.0)
+
+    kept_labels, kept_scores = experiment_module._scored_trials(labels, gapped)
+    assert len(kept_labels) == 400 - 134 and np.isfinite(kept_scores).all()
+
+
+def test_run_experiment_rescores_go_and_gs_of_runs_scored_without_fixed_gaps(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    config = _continuation_config(2)
+    config.evaluation.test_strategies = ["OS", "GO16", "GS16"]
+    first = run_experiment(config, corpus=corpus)
+    manifest_path = experiment_module._manifest_path(config, "OS")
+    manifest = experiment_module._load_manifest(manifest_path)
+    assert manifest["completed"][0]["sst_gap_frames"] == config.sst_gap_frames == 10
+    # A run scored before fixed gaps: no sst_gap_frames, other GO/GS EERs.
+    record = manifest["completed"][0]
+    del record["sst_gap_frames"]
+    record["sv"]["GO16"] = record["sv"]["GS16"] = 0.99
+    experiment_module._save_manifest(manifest_path, manifest)
+
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: pytest.fail("retrained"))
+    results = run_experiment(config, corpus=corpus)
+
+    for test_strategy in ("OS", "GO16", "GS16"):
+        assert results["SV"][("OS", test_strategy)].mean == pytest.approx(first["SV"][("OS", test_strategy)].mean)
+    assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_gap_frames"] == 10
+
+
+def test_run_experiment_refuses_to_train_on_gapped_strategies():
+    config = _continuation_config(1)
+    config.training.strategies = ["GO16"]
+    with pytest.raises(ValueError, match="test strategies only"):
+        run_experiment(config, corpus=_tiny_stub_corpus())
+
+
 def _sst_quality_config():
     config = _continuation_config(1)
     config.evaluation.test_strategies = ["OS", "BS16", "GO16", "GS16"]

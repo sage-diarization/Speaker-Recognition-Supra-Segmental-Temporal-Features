@@ -101,31 +101,46 @@ def test_draw_strategies_register_block_shuffles_and_mixtures():
     assert {"OS", "SS", "SU", "BS4", "BS64", "MIX", "RANDBS"} <= set(DRAW_STRATEGIES)
 
 
-def test_gapped_segment_spreads_ordered_blocks_over_the_utterance(utterance):
-    from src.data.segments import gapped_segment
+def test_gapped_segment_keeps_a_fixed_gap_between_ordered_blocks(utterance):
+    from src.data.segments import gapped_segment, gapped_span
 
-    # 300 frames, 6 blocks of 16: gap (300 - 96) // 6 = 34, slack 204 - 5 * 34 = 34.
-    rows = gapped_segment(utterance, 96, 16, 0.0)[:, 0] / 8
+    # 6 blocks of 16 with gaps of 10: they span 96 + 5 * 10 = 146 of the 300 frames.
+    assert gapped_span(96, 16, 10) == 146
+    rows = gapped_segment(utterance, 96, 16, 10, 0.0)[:, 0] / 8
     assert len(rows) == 96
     for i in range(6):
-        np.testing.assert_array_equal(rows[i * 16:(i + 1) * 16], np.arange(16) + i * 50)
-    last = gapped_segment(utterance, 96, 16, 1.0)[:, 0] / 8
-    assert last[0] == 34 and last[-1] == 299
+        np.testing.assert_array_equal(rows[i * 16:(i + 1) * 16], np.arange(16) + i * 26)
+    last = gapped_segment(utterance, 96, 16, 10, 1.0)[:, 0] / 8
+    assert last[0] == 300 - 146 and last[-1] == 299
+
+
+def test_gapped_segment_gap_does_not_depend_on_the_utterance_length(utterance):
+    from src.data.segments import gapped_segment
+
+    short = gapped_segment(utterance[:150], 96, 16, 10, 0.0)
+    np.testing.assert_array_equal(short, gapped_segment(utterance, 96, 16, 10, 0.0))
 
 
 def test_gapped_segment_keeps_a_shorter_last_block(utterance):
     from src.data.segments import gapped_segment
 
-    rows = gapped_segment(utterance, 40, 16, 0.0)[:, 0] / 8  # blocks of 16, 16, 8; gap 260 // 3 = 86
-    np.testing.assert_array_equal(rows, np.concatenate([np.arange(16), np.arange(16) + 102, np.arange(8) + 204]))
+    rows = gapped_segment(utterance, 40, 16, 5, 0.0)[:, 0] / 8  # blocks of 16, 16, 8
+    np.testing.assert_array_equal(rows, np.concatenate([np.arange(16), np.arange(16) + 21, np.arange(8) + 42]))
+
+
+def test_gapped_segment_raises_when_utterance_too_short_for_the_gaps(utterance):
+    from src.data.segments import gapped_segment
+
+    with pytest.raises(ValueError):
+        gapped_segment(utterance[:145], 96, 16, 10, 0.0)
 
 
 @pytest.mark.parametrize("block_size", [4, 16])
 def test_gs_shuffles_exactly_the_blocks_of_the_matching_go_draw(utterance, block_size):
     from src.data.segments import draw_go, draw_gs
 
-    go = draw_go(utterance, 96, np.random.default_rng(3), block_size=block_size)
-    gs = draw_gs(utterance, 96, np.random.default_rng(3), block_size=block_size)
+    go = draw_go(utterance, 96, np.random.default_rng(3), block_size=block_size, gap=4)
+    gs = draw_gs(utterance, 96, np.random.default_rng(3), block_size=block_size, gap=4)
     assert not np.array_equal(go, gs)
 
     def blocks(segment):

@@ -1108,3 +1108,69 @@ def sst_range(archs: Optional[List[str]] = None,
                handler_map={tuple: HandlerTuple(ndivide=None, pad=0)},
                loc='lower center', ncol=3, fontsize=11, frameon=False)
     plt.tight_layout(rect=(0, 0.06, 1, 1))
+
+
+def paper_vs_conformer(archs: Optional[List[str]] = None,
+                       datasets: Optional[List[str]] = None,
+                       figsize: Tuple[int, int] = (14, 6),
+                       ylabel: str = 'EER'):
+    """
+    Compare the in-distribution EERs EER(train=OS, test=OS) and EER(train=SS, test=SS)
+    reported in the paper with those of the Conformer in the reproduction.
+
+    Parameters:
+    -----------
+    archs : List[str]
+        Paper architectures to include. Default: ['CNN', 'RNN', 'ResNet']
+    datasets : List[str]
+        Datasets to include, one subplot each. Default: all datasets
+    figsize : Tuple[int, int]
+        Figure size. Default: (14, 6)
+    ylabel : str
+        Y-axis label. Default: 'EER'
+    """
+    if archs is None:
+        archs = ['CNN', 'RNN', 'ResNet']
+    if datasets is None:
+        datasets = sorted(df_repro['dataset'].unique())
+
+    indexed_paper = df_paper.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])
+    indexed_repro = df_repro.set_index(['dataset', 'architecture', 'train_strategy', 'test_strategy'])
+
+    fig, axes = plt.subplots(1, len(datasets), figsize=figsize, sharey=True)
+
+    # Handle single dataset case
+    if len(datasets) == 1:
+        axes = [axes]
+
+    sources = [(indexed_paper, arch) for arch in archs] + [(indexed_repro, 'Conformer')]
+    xticklabels = [f'{arch}' for arch in archs] + ['Conformer']
+    x = np.arange(len(sources))
+    bar_width = 0.4
+
+    for i, dataset in enumerate(datasets):
+        ax = axes[i]
+
+        rows = {}
+        for offset, strategy in [(-bar_width / 2, 'SS'), (bar_width / 2, 'OS')]:
+            rows[strategy] = [indexed.loc[(dataset, arch, strategy, strategy)] for indexed, arch in sources]
+            ax.bar(x + offset, [row['eer_mean'] for row in rows[strategy]], bar_width,
+                   yerr=[row['eer_std'] for row in rows[strategy]], capsize=5,
+                   color=DEFAULT_COLORMAP[strategy], label=f'EER(train={strategy}, test={strategy})',
+                   **BAR_STYLE_SOLID)
+
+        # Relative difference of EER(OS,OS) to EER(SS,SS) above each pair
+        for xi, os_os, ss_ss in zip(x, rows['OS'], rows['SS']):
+            rel_diff = ((os_os['eer_mean'] - ss_ss['eer_mean']) / ss_ss['eer_mean']) * 100
+            top = max(os_os['eer_mean'] + os_os['eer_std'], ss_ss['eer_mean'] + ss_ss['eer_std'])
+            ax.text(xi, top + 0.5, f'{rel_diff:+.1f}%', ha='center', va='bottom', fontsize=9)
+
+        _style_axis(ax,
+                   title=f'dataset = {dataset}',
+                   ylabel=ylabel if i == 0 else None,
+                   xticks=x,
+                   xticklabels=xticklabels)
+        ax.legend(**{**LEGEND_STYLE, 'loc': 'upper right'})
+        ax.margins(y=0.15)  # Headroom so the legend doesn't cover the labels
+
+    plt.tight_layout()

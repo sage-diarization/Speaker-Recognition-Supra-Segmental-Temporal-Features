@@ -45,8 +45,8 @@ training:
   compile: true            # CUDA graphs, see TrainingConfig.compile
 
 evaluation:
-  # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: the same blocks spread
-  # over the utterance, in original/shuffled order, for L(b)
+  # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: blocks with fixed gaps
+  # (evaluation.sst_gap_s) in original/shuffled order, for L(b)
   # (see src/experiment.py's sst_bracket). Blocks of 8/16/32/64 frames span
   # 134/214/374/694 ms of signal.
   test_strategies: [OS, SS, BS8, BS16, BS32, BS64, GO8, GS8, GO16, GS16, GO32, GS32, GO64, GS64]

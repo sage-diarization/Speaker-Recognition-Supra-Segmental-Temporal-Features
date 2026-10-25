@@ -63,40 +63,46 @@ def draw_bs(data, segment_length, rng=None, block_size=1):
     return shuffle_blocks(draw_os(data, segment_length, rng), block_size, rng)
 
 
-def gapped_segment(data, segment_length, block_size, position):
+def gapped_span(segment_length, block_size, gap):
+    """Frames of the utterance that gapped_segment's blocks and gaps span."""
+    return segment_length + (-(-segment_length // block_size) - 1) * gap
+
+
+def gapped_segment(data, segment_length, block_size, gap, position):
     """The segment_length frames of ceil(segment_length / block_size)
-    consecutive block_size-frame blocks (the last one may be shorter), spread
-    evenly over the whole utterance and kept in their original order: equal
-    gaps of (length - segment_length) // blocks frames between them, so every
-    join splices two frames that were never adjacent. position in [0, 1]
-    shifts all blocks together through the slack the integer gap leaves
-    over. A gap of 0 (utterance of exactly segment_length frames) is OS."""
-    _validate(data, segment_length)
-    num_blocks = -(-segment_length // block_size)
-    gap = (data.shape[0] - segment_length) // num_blocks
-    slack = data.shape[0] - segment_length - (num_blocks - 1) * gap
-    start = round(position * slack)
+    consecutive block_size-frame blocks (the last one may be shorter), kept
+    in their original order with a fixed gap of `gap` frames between them,
+    so every join splices two frames that were never adjacent. The gap
+    doesn't depend on the utterance's length: every utterance gets the same
+    blocks-and-gaps pattern (the same speedup (block_size + gap) /
+    block_size of the ordered blocks), and one shorter than
+    gapped_span(...) frames can't be drawn. position in [0, 1] places the
+    span within the utterance."""
+    span = gapped_span(segment_length, block_size, gap)
+    if data.shape[0] < span:
+        raise ValueError(f"utterance length {data.shape[0]} is shorter than the gapped span {span}")
+    start = round(position * (data.shape[0] - span))
     return np.concatenate([
         data[start + i * (block_size + gap):start + i * (block_size + gap) + min(block_size, segment_length - i * block_size)]
-        for i in range(num_blocks)
+        for i in range(-(-segment_length // block_size))
     ])
 
 
-def draw_go(data, segment_length, rng=None, block_size=1):
+def draw_go(data, segment_length, rng=None, *, block_size, gap):
     """Gapped, Ordered blocks (the control C_b): gapped_segment at a random
     position. Its joins splice frames that were never adjacent, like GS's,
     but the block order is the original one."""
     rng = rng or np.random.default_rng()
-    return gapped_segment(data, segment_length, block_size, rng.random())
+    return gapped_segment(data, segment_length, block_size, gap, rng.random())
 
 
-def draw_gs(data, segment_length, rng=None, block_size=1):
+def draw_gs(data, segment_length, rng=None, *, block_size, gap):
     """Gapped, Shuffled blocks (S_b): GO's blocks in random order. GS{b}
     against GO{b} differs only in block order, with the same blocks and
     number of joins. Its joins splice random pairs of blocks rather than
     neighbours, so they can be rougher (see temporal_probes.join_discontinuity)."""
     rng = rng or np.random.default_rng()
-    return shuffle_blocks(draw_go(data, segment_length, rng, block_size), block_size, rng)
+    return shuffle_blocks(draw_go(data, segment_length, rng, block_size=block_size, gap=gap), block_size, rng)
 
 
 def draw_mixture(data, segment_length, rng=None, choices=()):
@@ -123,6 +129,8 @@ DRAW_STRATEGIES = {
     "SS": draw_ss,
     "SU": draw_su,
     **{f"BS{b}": functools.partial(draw_bs, block_size=b) for b in BLOCK_SIZES},
+    # Test strategies only: their gap (ExperimentConfig.sst_gap_frames) is
+    # passed by the evaluation (see trainer._eval_windows).
     **{f"GO{b}": functools.partial(draw_go, block_size=b) for b in BLOCK_SIZES},
     **{f"GS{b}": functools.partial(draw_gs, block_size=b) for b in BLOCK_SIZES},
     **{name: functools.partial(draw_mixture, choices=choices) for name, choices in MIXTURES.items()},

@@ -70,6 +70,12 @@ class TransformationConfig:
         steps = int((self.sample_rate + self.frame_step - self.frame_length) / self.frame_step)
         return -(-steps // 2) if self.type == "w2vbert" else steps
 
+    @property
+    def frame_period_s(self):
+        """Seconds between the starts of consecutive feature frames. A w2vbert
+        frame stacks 2 fbank frames, so it steps 2 * frame_step_s."""
+        return 2 * self.frame_step_s if self.type == "w2vbert" else self.frame_step_s
+
     def block_span_s(self, frames):
         """Seconds of signal spanned by `frames` consecutive feature frames.
         A w2vbert frame stacks 2 fbank frames, so it steps 2 * frame_step_s."""
@@ -376,6 +382,10 @@ class EvaluationConfig:
     # the placebo EER(GS_b, 2nd seed) - EER(GS_b) is the noise the random
     # block order alone adds to L(b).
     sst_placebo: bool = False
+    # Fixed gap between the blocks of the GO{b}/GS{b} test strategies, in
+    # seconds (see src/data/segments.py's gapped_segment). Their EERs come
+    # from only the trials whose utterances are long enough for it.
+    sst_gap_s: float = 0.1
 
 
 @dataclass
@@ -449,3 +459,8 @@ class ExperimentConfig:
 
     def to_dict(self):
         return asdict(self)
+
+    @property
+    def sst_gap_frames(self):
+        """evaluation.sst_gap_s in feature frames."""
+        return round(self.evaluation.sst_gap_s / self.transformation.frame_period_s)

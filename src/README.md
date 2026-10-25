@@ -203,8 +203,8 @@ and one that keeps them and leans high.
   blocks, the block order permuted, the frame order inside each block
   kept.
 - **GO{b}** (gapped, ordered: the control C_b): k = ⌈segment / b⌉ blocks
-  of b frames, spread evenly over the whole utterance of N frames with gaps
-  of ⌊(N − segment) / k⌋ frames between them, and concatenated in their
+  of b frames with a fixed gap of g frames between them
+  (`evaluation.sst_gap_s`, 100 ms by default), concatenated in their
   original order. Every join splices two frames that were never adjacent,
   but the order of the blocks is the original one.
 - **GS{b}** (gapped, shuffled: S_b): the same blocks as GO{b}, in random
@@ -216,10 +216,37 @@ content and the same number of joins, and differ only in block order. The
 joins themselves are not identical: GO{b} always splices block j to block
 j + 1, one gap apart, while GS{b} splices random pairs of blocks, on
 average further apart in the utterance. GS{b}'s joins can therefore be
-rougher, most of all when the gap is small (short utterances, small b);
-see the join discontinuity check below. The gap grows
-with the utterance length: as N approaches the segment length it shrinks
-to 0 and GO{b} becomes OS.
+rougher, most of all when the gap is small; see the join discontinuity
+check below.
+
+**Why the gap is fixed.** The blocks used to be spread over the whole
+utterance, with a gap of ⌊(N − segment) / k⌋ frames that grew with the
+utterance length N. With small blocks, GO{b} then plays the speech back
+(b + g) / b times faster, at a speed that differed from utterance to
+utterance, and unchanged (g = 0, i.e. OS) for the shortest ones. Trials
+pairing utterances of different speeds scored differently, and pooled
+under one EER threshold this inflated EER(GO_b): for w2v-BERT 2.0 at 3 s
+and b = 2, EER(GO_2) was 18.97% over all trials but 9.32% over the trials
+whose two utterances had the same gap, against 11.59% for GS_2. A fixed
+gap gives every utterance the same speed.
+
+The price is that an utterance shorter than the span of the blocks and
+gaps, segment + (k − 1) · g frames, can't be drawn. Its GO{b}/GS{b}
+embedding is NaN, and EER(GO_b) and EER(GS_b) come from only the trials
+whose two utterances are long enough (logged as
+`run{i}/final/SV_trials_test-{GO,GS}{b}`), so they are a different trial
+subset for every b. The same holds for the bootstrap intervals and the
+placebo. EER(OS), EER(BS_b) and U(b) stay on the full trial list. On
+VoxCeleb1-H with g = 100 ms, the subset keeps these shares of the trials
+(the same for 10 ms and 20 ms frames at equal block spans):
+
+| Segment | 55 ms | 95 ms | 175 ms | ≥ 335 ms |
+|---|---|---|---|---|
+| 2 s | 22% | 77% | 100% | 100% |
+| 3 s | 5% | 25% | 63% | 100% |
+
+Small b need either long utterances or a short segment. Completed runs whose GO{b}/GS{b} were scored without the
+configured gap (`sst_gap_frames` in the manifest) are scored again.
 
 #### Measures
 
@@ -233,7 +260,7 @@ Per run and block size, `src/experiment.py`'s `sst_bracket` reports:
 | U_norm(b) | U(b) / (50% − EER(OS)) | % of headroom |
 
 **L(b), the lower estimate.** GO_b and GS_b contain the same blocks and
-the same number of joins, so the join artefacts largely cancel in their
+the same number of joins (and are scored on the same trials), so the join artefacts largely cancel in their
 difference, and L(b) is mainly the cost of the block order. What doesn't
 cancel is the difference in join roughness, δ_A = A(GS_b) − A(GO_b), which
 pushes L(b) up (see the quality checks). Otherwise L(b) tends to
@@ -267,7 +294,10 @@ follows:
   check shows GO's and GS's joins equally rough, so δ_A can't explain it.
 
 EER(GO_b) − EER(OS) is the cost of the joins and gaps alone (from the SV
-table), which shows how much of U(b) may be artefact.
+table), which shows how much of U(b) may be artefact. Where GO_b's trial
+subset is much smaller than the full list, this difference (and the check
+of assumption 1) also contains the difference between the two trial
+lists.
 
 **The normalized band.** An EER difference means more for a model close
 to chance than for a strong one: a model at 45% EER can lose at most 5

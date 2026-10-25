@@ -312,16 +312,41 @@ def test_eval_windows_go_and_gs_take_the_same_blocks_per_window():
     from src.training.trainer import _eval_windows
 
     features = np.arange(200 * 3, dtype=np.float32).reshape(200, 3)
-    go = _eval_windows(features, 40, 20, 5, "GO8", np.random.default_rng(0))
-    gs = _eval_windows(features, 40, 20, 5, "GS8", np.random.default_rng(1))
-    assert len({window[0, 0] for window in go}) == 5  # windows move through the slack
+    go = _eval_windows(features, 40, 20, 5, "GO8", np.random.default_rng(0), gap=6)
+    gs = _eval_windows(features, 40, 20, 5, "GS8", np.random.default_rng(1), gap=6)
+    assert len({window[0, 0] for window in go}) == 5  # windows move through the utterance
     for go_window, gs_window in zip(go, gs):
         rows = go_window[:, 0] / 3
         assert np.all(np.diff(rows) > 0)  # original order
-        assert np.diff(rows).max() > 1    # with gaps
+        assert set(np.diff(rows)) == {1, 7}  # with gaps of 6
         assert not np.array_equal(go_window, gs_window)
         blocks = lambda w: sorted(tuple(w[st:st + 8, 0]) for st in range(0, 40, 8))
         assert blocks(go_window) == blocks(gs_window)
+
+
+def test_eval_windows_go_and_gs_draw_nothing_from_an_utterance_too_short_for_the_gaps():
+    from src.training.trainer import _eval_windows
+
+    features = np.zeros((60, 3), dtype=np.float32)  # 5 blocks of 8 with gaps of 6 span 64
+    assert _eval_windows(features, 40, 20, 2, "GO8", np.random.default_rng(0), gap=6) == []
+    assert _eval_windows(features, 40, 20, 2, "GS8", np.random.default_rng(0), gap=6) == []
+    with pytest.raises(ValueError):
+        _eval_windows(features, 40, 20, 2, "GO8", np.random.default_rng(0))
+
+
+def test_extract_embeddings_gives_nan_under_go_to_an_utterance_too_short_for_the_gaps():
+    from src.training.trainer import extract_embeddings_by_strategy
+
+    utterances = [(np.ones((60, 3), dtype=np.float32), "short"), (np.ones((80, 3), dtype=np.float32), "long")]
+    rngs = {"OS": np.random.default_rng(0), "GO8": np.random.default_rng(0)}
+    embeddings = extract_embeddings_by_strategy(_MeanModel(), utterances, 40, rngs, gap=6)
+    np.testing.assert_allclose(embeddings["OS"][0], 1.0)
+    assert np.isnan(embeddings["GO8"][0][0]).all()
+    np.testing.assert_allclose(embeddings["GO8"][0][1], 1.0)
+    # Only too-short utterances: the embedding size still comes out right.
+    only_short = extract_embeddings_by_strategy(_MeanModel(), utterances[:1], 40, {"GO8": np.random.default_rng(0)}, gap=6)
+    assert only_short["GO8"][0].shape == embeddings["GO8"][0][:1].shape
+    assert np.isnan(only_short["GO8"][0]).all()
 
 
 class _FrameMeanModel(_MeanModel):
@@ -337,7 +362,7 @@ def test_permutation_sensitivity_compares_gs_against_its_go_control():
 
     rng = np.random.default_rng(0)
     utterances = [(rng.normal(size=(80, 4)).astype(np.float32), i) for i in range(3)]
-    sensitivity = permutation_sensitivity(_FrameMeanModel(), utterances, 20, ["GS4", "GO4"])
+    sensitivity = permutation_sensitivity(_FrameMeanModel(), utterances, 20, ["GS4", "GO4"], gap=3)
     assert abs(sensitivity["GS4"]) < 1e-6  # same frames as GO4, only reordered
     assert sensitivity["GO4"] > 1e-3       # other frames than OS
 
@@ -347,14 +372,14 @@ def test_join_discontinuity_measures_every_join_and_adjacent_frames():
 
     # A ramp: frame t is t everywhere, so a join's distance is how far apart its frames were.
     features = np.repeat(np.arange(200, dtype=np.float32)[:, None], 4, axis=1)
-    distances = join_discontinuity([(features, 0)], 40, ["BS8", "GO8", "GS8"])
+    distances = join_discontinuity([(features, 0)], 40, ["BS8", "GO8", "GS8"], gap=10)
 
     num_windows = (200 - 40) // 20 + 1
     np.testing.assert_allclose(distances["adjacent"], 2.0)  # sqrt(4 bands)
     assert len(distances["adjacent"]) == num_windows * 39
-    # GO joins jump forward by one block and one gap of (200 - 40) // 5 = 32 frames.
+    # GO joins jump forward by one block and one gap of 10 frames.
     assert len(distances["GO8"]) == num_windows * 4
-    np.testing.assert_allclose(distances["GO8"], (1 + 32) * 2.0)
+    np.testing.assert_allclose(distances["GO8"], (1 + 10) * 2.0)
     assert distances["GS8"].mean() > distances["GO8"].mean()
     # Shuffled blocks that stay original neighbours make no join.
     assert 0 < len(distances["BS8"]) <= num_windows * 4
@@ -365,6 +390,6 @@ def test_join_discontinuity_finds_joins_next_to_a_shorter_last_block():
     from src.evaluation.temporal_probes import join_discontinuity
 
     features = np.repeat(np.arange(300, dtype=np.float32)[:, None], 1, axis=1)
-    distances = join_discontinuity([(features, 0)], 44, ["GS16"])  # blocks of 16, 16, 12
+    distances = join_discontinuity([(features, 0)], 44, ["GS16"], gap=10)  # blocks of 16, 16, 12
     # No join is a step between neighbouring frames, wherever the 12-frame block lands.
     assert np.all(distances["GS16"] > 1.0)
