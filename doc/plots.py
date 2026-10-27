@@ -1112,11 +1112,14 @@ def sst_range(archs: Optional[List[str]] = None,
 
 def paper_vs_conformer(archs: Optional[List[str]] = None,
                        datasets: Optional[List[str]] = None,
+                       train_strategy: Optional[str] = None,
                        figsize: Tuple[int, int] = (14, 6),
                        ylabel: str = 'EER'):
     """
     Compare the in-distribution EERs EER(train=OS, test=OS) and EER(train=SS, test=SS)
     reported in the paper with those of the Conformer in the reproduction.
+    With train_strategy set, compare EER(train=train_strategy, test=OS) and
+    EER(train=train_strategy, test=SS) instead.
 
     Parameters:
     -----------
@@ -1124,6 +1127,8 @@ def paper_vs_conformer(archs: Optional[List[str]] = None,
         Paper architectures to include. Default: ['CNN', 'RNN', 'ResNet']
     datasets : List[str]
         Datasets to include, one subplot each. Default: all datasets
+    train_strategy : str
+        Training strategy of both compared EERs. Default: None (train = test strategy)
     figsize : Tuple[int, int]
         Figure size. Default: (14, 6)
     ylabel : str
@@ -1153,13 +1158,14 @@ def paper_vs_conformer(archs: Optional[List[str]] = None,
 
         rows = {}
         for offset, strategy in [(-bar_width / 2, 'SS'), (bar_width / 2, 'OS')]:
-            rows[strategy] = [indexed.loc[(dataset, arch, strategy, strategy)] for indexed, arch in sources]
+            train = train_strategy or strategy
+            rows[strategy] = [indexed.loc[(dataset, arch, train, strategy)] for indexed, arch in sources]
             ax.bar(x + offset, [row['eer_mean'] for row in rows[strategy]], bar_width,
                    yerr=[row['eer_std'] for row in rows[strategy]], capsize=5,
-                   color=DEFAULT_COLORMAP[strategy], label=f'EER(train={strategy}, test={strategy})',
+                   color=DEFAULT_COLORMAP[strategy], label=f'EER(train={train}, test={strategy})',
                    **BAR_STYLE_SOLID)
 
-        # Relative difference of EER(OS,OS) to EER(SS,SS) above each pair
+        # Relative difference of the test=OS to the test=SS EER above each pair
         for xi, os_os, ss_ss in zip(x, rows['OS'], rows['SS']):
             rel_diff = ((os_os['eer_mean'] - ss_ss['eer_mean']) / ss_ss['eer_mean']) * 100
             top = max(os_os['eer_mean'] + os_os['eer_std'], ss_ss['eer_mean'] + ss_ss['eer_std'])

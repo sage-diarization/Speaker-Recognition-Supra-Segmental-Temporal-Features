@@ -16,7 +16,8 @@ dependencies = [
     "transformers",
     "pytest",
     "plotly",
-    "pandas"
+    "pandas",
+    "ipywidgets"
 ]
 
 [tool.uv]
