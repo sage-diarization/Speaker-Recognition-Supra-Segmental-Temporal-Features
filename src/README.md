@@ -203,8 +203,8 @@ and one that keeps them and leans high.
   blocks, the block order permuted, the frame order inside each block
   kept.
 - **GO{b}** (gapped, ordered: the control C_b): k = ⌈segment / b⌉ blocks
-  of b frames with a fixed gap of g frames between them
-  (`evaluation.sst_gap_s`, 100 ms by default), concatenated in their
+  of b frames with a gap of g = round(r · b) frames between them
+  (r = `evaluation.sst_gap_ratio`, 1 by default), concatenated in their
   original order. Every join splices two frames that were never adjacent,
   but the order of the blocks is the original one.
 - **GS{b}** (gapped, shuffled: S_b): the same blocks as GO{b}, in random
@@ -230,23 +230,40 @@ and b = 2, EER(GO_2) was 18.97% over all trials but 9.32% over the trials
 whose two utterances had the same gap, against 11.59% for GS_2. A fixed
 gap gives every utterance the same speed.
 
+**Why the gap scales with the block.** A gap fixed in time (it used to be
+100 ms for every b) stretches GO{b} by (b + g) / b, more the smaller the
+block: 2.25× at b = 8 but 1.16× at b = 64 (10 ms frames). EER(GO_b) then
+starts from a baseline degraded more at small b, leaving less order for the
+shuffle to destroy, and the span segment + (k − 1) · g grows as b shrinks,
+so every b has its own trial subset. Both made L(b) non-comparable across
+b (for the CNN, L(8) < L(16)). With g = r · b, every GO{b} is the same
+pattern of kept blocks and gaps, only scaled in time: the same stretch
+1 + r at every b, and a span of about segment · (1 + r) frames, nearly
+the same trial subset for every b.
+
+r = 1 is chosen phonetically: from b = 8 frames (10 ms frames) or b = 4
+(20 ms frames) up, the gap is at least 80 ms, about one phone, so a GO
+join usually splices two segments that weren't neighbours, with most of
+the coarticulation between them faded, and the frames at a join share no
+signal (64 ms frames need g ≥ 6). The configs therefore test GO{b}/GS{b}
+only at block sizes whose gap is ≥ 80 ms. What a constant ratio doesn't
+equalize: the number of joins per window (⌈segment / b⌉ − 1) and the
+absolute gap length still change with b, and EER(GO_b) still differs
+across b, so L(b) is still a lower bound per b, not a nested
+decomposition over block sizes.
+
 The price is that an utterance shorter than the span of the blocks and
-gaps, segment + (k − 1) · g frames, can't be drawn. Its GO{b}/GS{b}
+gaps, segment + (k − 1) · g ≈ segment · (1 + r) frames, can't be drawn. Its GO{b}/GS{b}
 embedding is NaN, and EER(GO_b) and EER(GS_b) come from only the trials
 whose two utterances are long enough (logged as
 `run{i}/final/SV_trials_test-{GO,GS}{b}`), so they are a different trial
 subset for every b. The same holds for the bootstrap intervals and the
-placebo. EER(OS), EER(BS_b) and U(b) stay on the full trial list. On
-VoxCeleb1-H with g = 100 ms, the subset keeps these shares of the trials
-(the same for 10 ms and 20 ms frames at equal block spans):
-
-| Segment | 55 ms | 95 ms | 175 ms | ≥ 335 ms |
-|---|---|---|---|---|
-| 2 s | 22% | 77% | 100% | 100% |
-| 3 s | 5% | 25% | 63% | 100% |
-
-Small b need either long utterances or a short segment. Completed runs whose GO{b}/GS{b} were scored without the
-configured gap (`sst_gap_frames` in the manifest) are scored again.
+placebo. EER(OS), EER(BS_b) and U(b) stay on the full trial list. With
+r = 1 the span is about twice the segment: about 4 s for 2 s segments,
+which nearly every VoxCeleb1 utterance (≥ 4 s) covers, but about 6 s for
+3 s segments, which keeps only a part of the trials. Completed runs whose
+GO{b}/GS{b} were scored without the configured gap ratio
+(`sst_gap_ratio` in the manifest) are scored again.
 
 #### Measures
 

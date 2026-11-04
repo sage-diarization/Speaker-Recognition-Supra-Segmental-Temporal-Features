@@ -455,7 +455,7 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     return history, paper_comparable_best
 
 
-def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap=None):
+def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap_ratio=None):
     """Builds the num_windows hop-window segments for one utterance, matching
     context/src/setup/setup.py's precomputed EVAL distributions -- the ones
     context/src/generator/sampler.py::load_test actually reads at test time
@@ -481,16 +481,18 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     mixture (MIX, RANDBS, see src/data/segments.py's MIXTURES) treats each
     window by one of its strategies, picked at random per window.
 
-    GO{b}/GS{b} windows instead take b-frame blocks with fixed gaps of `gap`
-    frames between them (src/data/segments.py::gapped_segment), the
+    GO{b}/GS{b} windows instead take b-frame blocks with fixed gaps of
+    round(gap_ratio * b) frames between them
+    (src/data/segments.py::gapped_segment), the
     num_windows windows at evenly-spaced positions through the utterance.
     The positions use no randomness, so GO{b} and GS{b} take the same
     blocks in every window and differ only in GS{b}'s block order. An
     utterance too short for the gaps gets no windows (an empty list)."""
     if draw_strategy.startswith(("GO", "GS")):
-        if gap is None:
+        if gap_ratio is None:
             raise ValueError(f"{draw_strategy} needs the gap between its blocks")
-        if features.shape[0] < gapped_span(segment_length, int(draw_strategy[2:]), gap):
+        block_size = int(draw_strategy[2:])
+        if features.shape[0] < gapped_span(segment_length, block_size, round(gap_ratio * block_size)):
             return []
     if draw_strategy == "SU":
         length = features.shape[0]
@@ -502,7 +504,7 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
             strategy = MIXTURES[strategy][rng.integers(len(MIXTURES[strategy]))]
         if strategy.startswith(("GO", "GS")):
             block_size = int(strategy[2:])
-            segment = gapped_segment(features, segment_length, block_size, gap, i / max(num_windows - 1, 1))
+            segment = gapped_segment(features, segment_length, block_size, round(gap_ratio * block_size), i / max(num_windows - 1, 1))
             if strategy.startswith("GS"):
                 segment = shuffle_blocks(segment, block_size, rng)
             segments.append(segment)
@@ -555,13 +557,13 @@ EMBEDDING_BATCH_FRAMES = 2048 * 94
 
 
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
-                                   log_every=None, resume_dir=None, gap=None):
+                                   log_every=None, resume_dir=None, gap_ratio=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
     each strategy to the Generator its windows are drawn with -- featurizing
     every utterance only once instead of once per strategy. Returns
     {strategy: (embeddings, labels)}, each equal to a separate
     extract_embeddings call with that strategy and Generator. log_every
-    prints progress every that many utterances. gap is the GO{b}/GS{b}
+    prints progress every that many utterances. gap_ratio sets the GO{b}/GS{b}
     strategies' gap between blocks (see _eval_windows); an utterance too
     short for it gets a NaN embedding under them.
 
@@ -622,7 +624,7 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                     if counts and sum(counts) + num_windows > batch_windows:
                         embeddings[strategy].extend(embed(windows, counts))
                         windows, counts = pending[strategy] = ([], [])
-                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap)
+                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap_ratio)
                     if segments:
                         windows.append(np.stack(segments))
                     counts.append(len(segments))

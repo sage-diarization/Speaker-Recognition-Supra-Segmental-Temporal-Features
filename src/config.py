@@ -382,10 +382,13 @@ class EvaluationConfig:
     # the placebo EER(GS_b, 2nd seed) - EER(GS_b) is the noise the random
     # block order alone adds to L(b).
     sst_placebo: bool = False
-    # Fixed gap between the blocks of the GO{b}/GS{b} test strategies, in
-    # seconds (see src/data/segments.py's gapped_segment). Their EERs come
-    # from only the trials whose utterances are long enough for it.
-    sst_gap_s: float = 0.1
+    # Gap between the blocks of the GO{b}/GS{b} test strategies, as a
+    # multiple of the block size: round(sst_gap_ratio * b) frames (see
+    # src/data/segments.py's gapped_segment). A constant ratio gives every b
+    # the same stretch (1 + ratio) and about the same span,
+    # segment * (1 + ratio) frames. Their EERs come from only the trials
+    # whose utterances are long enough for that span.
+    sst_gap_ratio: float = 1.0
 
 
 @dataclass
@@ -459,8 +462,3 @@ class ExperimentConfig:
 
     def to_dict(self):
         return asdict(self)
-
-    @property
-    def sst_gap_frames(self):
-        """evaluation.sst_gap_s in feature frames."""
-        return round(self.evaluation.sst_gap_s / self.transformation.frame_period_s)

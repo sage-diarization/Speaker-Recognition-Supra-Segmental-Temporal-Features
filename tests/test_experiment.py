@@ -1116,10 +1116,10 @@ def test_run_experiment_rescores_go_and_gs_of_runs_scored_without_fixed_gaps(mon
     first = run_experiment(config, corpus=corpus)
     manifest_path = experiment_module._manifest_path(config, "OS")
     manifest = experiment_module._load_manifest(manifest_path)
-    assert manifest["completed"][0]["sst_gap_frames"] == config.sst_gap_frames == 10
-    # A run scored before fixed gaps: no sst_gap_frames, other GO/GS EERs.
+    assert manifest["completed"][0]["sst_gap_ratio"] == config.evaluation.sst_gap_ratio == 1.0
+    # A run scored before gaps scaled with the block: no sst_gap_ratio, other GO/GS EERs.
     record = manifest["completed"][0]
-    del record["sst_gap_frames"]
+    del record["sst_gap_ratio"]
     record["sv"]["GO16"] = record["sv"]["GS16"] = 0.99
     experiment_module._save_manifest(manifest_path, manifest)
 
@@ -1128,7 +1128,7 @@ def test_run_experiment_rescores_go_and_gs_of_runs_scored_without_fixed_gaps(mon
 
     for test_strategy in ("OS", "GO16", "GS16"):
         assert results["SV"][("OS", test_strategy)].mean == pytest.approx(first["SV"][("OS", test_strategy)].mean)
-    assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_gap_frames"] == 10
+    assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_gap_ratio"] == 1.0
 
 
 def test_run_experiment_refuses_to_train_on_gapped_strategies():

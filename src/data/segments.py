@@ -129,8 +129,8 @@ DRAW_STRATEGIES = {
     "SS": draw_ss,
     "SU": draw_su,
     **{f"BS{b}": functools.partial(draw_bs, block_size=b) for b in BLOCK_SIZES},
-    # Test strategies only: their gap (ExperimentConfig.sst_gap_frames) is
-    # passed by the evaluation (see trainer._eval_windows).
+    # Test strategies only: their gap (round(evaluation.sst_gap_ratio * b)
+    # frames) is passed by the evaluation (see trainer._eval_windows).
     **{f"GO{b}": functools.partial(draw_go, block_size=b) for b in BLOCK_SIZES},
     **{f"GS{b}": functools.partial(draw_gs, block_size=b) for b in BLOCK_SIZES},
     **{name: functools.partial(draw_mixture, choices=choices) for name, choices in MIXTURES.items()},

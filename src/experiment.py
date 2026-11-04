@@ -482,7 +482,7 @@ def run_experiment(config, corpus=None, strategies=None):
         raise ValueError(f"unknown draw strategies {unknown}, expected some of {list(DRAW_STRATEGIES)}")
     if any(_gapped(s) for s in strategies):
         raise ValueError("GO{b}/GS{b} are test strategies only, they can't be trained on")
-    gap = config.sst_gap_frames
+    gap_ratio = config.evaluation.sst_gap_ratio
     gapped_strategies = [s for s in test_strategies if _gapped(s)]
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
@@ -682,7 +682,7 @@ def run_experiment(config, corpus=None, strategies=None):
             Named by the strategies, so another set never reuses them."""
             if config.training.num_epochs > 0:
                 return None
-            key = hashlib.sha1(f"{','.join(strategies_to_test)};gap={gap}".encode()).hexdigest()[:10]
+            key = hashlib.sha1(f"{','.join(strategies_to_test)};gap_ratio={gap_ratio}".encode()).hexdigest()[:10]
             return _embedding_cache_dir(config, train_strategy, run_idx) / f"{name}-{key}"
 
         def evaluate(model, run_idx, record, strategies_to_test):
@@ -710,17 +710,17 @@ def run_experiment(config, corpus=None, strategies=None):
                 model, sv_eval_utterances, segment_length,
                 {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
                 device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                resume_dir=embedding_resume_dir(run_idx, "test", strategies_to_test), gap=gap,
+                resume_dir=embedding_resume_dir(run_idx, "test", strategies_to_test), gap_ratio=gap_ratio,
             )
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
                 sc_by_strategy = extract_embeddings_by_strategy(
                     model, sc_utterances, segment_length,
                     {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
-                    device=config.device, num_workers=config.training.num_workers, gap=gap,
+                    device=config.device, num_workers=config.training.num_workers, gap_ratio=gap_ratio,
                 )
             if any(_gapped(test_strategy) for test_strategy in strategies_to_test):
-                record["sst_gap_frames"] = gap
+                record["sst_gap_ratio"] = gap_ratio
             for test_strategy in strategies_to_test:
                 sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
                 if _gapped(test_strategy):
@@ -765,7 +765,7 @@ def run_experiment(config, corpus=None, strategies=None):
                     model, sv_eval_utterances, segment_length,
                     {test_strategy: np.random.default_rng((run_idx, 1)) for test_strategy in gs_strategies},
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), gap=gap,
+                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), gap_ratio=gap_ratio,
                 ) if gs_strategies else {}
                 record["sst_placebo"] = {
                     f"b{test_strategy[2:]}": eer_from_scores(*_scored_trials(*sv_scores_fn(*placebo_by_strategy[test_strategy])))
@@ -787,9 +787,10 @@ def run_experiment(config, corpus=None, strategies=None):
         for run_idx, completed_record in manifest["completed"].items():
             if run_idx in continued:
                 continue
-            if gapped_strategies and completed_record.get("sst_gap_frames") != gap:
-                # GO/GS scored with another gap, or with the blocks spread
-                # over the whole utterance (before fixed gaps): score them
+            if gapped_strategies and completed_record.get("sst_gap_ratio") != gap_ratio:
+                # GO/GS scored with another gap ratio, a gap fixed in seconds
+                # (sst_gap_frames), or with the blocks spread over the whole
+                # utterance (before fixed gaps): score them
                 # again, and the quality checks that use them.
                 for key in ("sv", "sv_min_dcf", "sc"):
                     for test_strategy in gapped_strategies:
