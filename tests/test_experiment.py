@@ -658,14 +658,14 @@ def test_run_experiment_logs_wandb_summary_on_a_0_100_scale(monkeypatch):
 
 def test_run_experiment_aggregates_mean_and_std_over_num_runs(monkeypatch):
     # Neururer et al. 2024 (Section 2.3) train/test each strategy repeatedly
-    # and report mean/SD of EER/MR over those runs. equal_error_rate and
+    # and report mean/SD of EER/MR over those runs. eer_from_scores and
     # best_misclassification_rate are stubbed with deterministic, strictly
     # increasing sequences so the exact per-cell mean/SD can be predicted from
     # the call order and checked against run_experiment's actual aggregation
     # (catches both wrong grouping across cells and a wrong run count), and
     # against what gets logged to wandb's aggregate summary.
     eer_counter = itertools.count()
-    monkeypatch.setattr(experiment_module, "equal_error_rate", lambda *a, **k: next(eer_counter) / 100.0)
+    monkeypatch.setattr(experiment_module, "eer_from_scores", lambda *a, **k: next(eer_counter) / 100.0)
     mr_counter = itertools.count()
     monkeypatch.setattr(experiment_module, "best_misclassification_rate", lambda *a, **k: next(mr_counter) / 100.0)
 
@@ -718,7 +718,7 @@ def test_run_experiment_resumes_across_a_crash_without_retraining_completed_runs
     # exact call order -- and therefore whether any run got redone -- is
     # verifiable regardless of real model training's inherent randomness.
     eer_counter = itertools.count()
-    monkeypatch.setattr(experiment_module, "equal_error_rate", lambda *a, **k: next(eer_counter) / 100.0)
+    monkeypatch.setattr(experiment_module, "eer_from_scores", lambda *a, **k: next(eer_counter) / 100.0)
     mr_counter = itertools.count()
     monkeypatch.setattr(experiment_module, "best_misclassification_rate", lambda *a, **k: next(mr_counter) / 100.0)
 
@@ -859,10 +859,15 @@ def test_run_experiment_voxceleb_selects_on_dev_trials_and_reports_on_eval_trial
     ]
     evaluated_ids = {"dev": [], "eval": []}
     real_eer = experiment_module.trial_list_equal_error_rate
+    real_scores = experiment_module.trial_list_scores
 
     def _spy_eer(embeddings, utterance_ids, trial_pairs):
         evaluated_ids["dev" if trial_pairs is corpus.dev_trial_pairs else "eval"].append(set(utterance_ids))
         return real_eer(embeddings, utterance_ids, trial_pairs)
+
+    def _spy_scores(embeddings, utterance_ids, trial_pairs):
+        evaluated_ids["dev" if trial_pairs is corpus.dev_trial_pairs else "eval"].append(set(utterance_ids))
+        return real_scores(embeddings, utterance_ids, trial_pairs)
 
     captured_train_entries = []
     real_train = experiment_module.train
@@ -872,6 +877,7 @@ def test_run_experiment_voxceleb_selects_on_dev_trials_and_reports_on_eval_trial
         return real_train(model, loss_module, dataset, cfg, **kwargs)
 
     monkeypatch.setattr(experiment_module, "trial_list_equal_error_rate", _spy_eer)
+    monkeypatch.setattr(experiment_module, "trial_list_scores", _spy_scores)
     monkeypatch.setattr(experiment_module, "train", _spy_train)
     run_experiment(config, corpus=corpus, strategies=("OS",))
 
@@ -1243,3 +1249,54 @@ def test_sst_by_roughness_gap_is_zero_in_every_bin_when_gs_scores_like_go():
     np.testing.assert_array_equal(strata["L"], 0.0)
     np.testing.assert_array_equal(strata["ci_low"], 0.0)
     np.testing.assert_array_equal(strata["ci_high"], 0.0)
+
+
+def test_run_experiment_saves_and_logs_the_scores_of_every_trial(monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        experiment_module.tracking, "log_artifact",
+        lambda run, name, artifact_type, path, metadata=None: logged.append((name, artifact_type, path)),
+    )
+    config = _continuation_config(1, keep_checkpoints=False)
+    config.evaluation.test_strategies = ["OS", "GO16", "GS16"]
+    config.evaluation.sst_placebo = True
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+
+    path = experiment_module._trial_scores_path(config, "OS", 0)
+    assert logged == [("CNN-timit-OS-run0-trials", "trial-scores", path)]
+    with np.load(path) as saved:
+        assert set(saved.files) == {"labels", "OS", "GO16", "GS16", "GS16-placebo"}
+        labels = saved["labels"]
+        assert all(len(saved[name]) == len(labels) for name in saved.files)
+        for strategy in config.evaluation.test_strategies:
+            eer = experiment_module.eer_from_scores(*experiment_module._scored_trials(labels, saved[strategy]))
+            assert eer == pytest.approx(results["SV"][("OS", strategy)].mean, abs=1e-6)
+
+
+def test_run_experiment_rescores_completed_runs_without_saved_trial_scores(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    config = _continuation_config(1)
+    first = run_experiment(config, corpus=corpus)
+    path = experiment_module._trial_scores_path(config, "OS", 0)
+    path.unlink()
+
+    trained = []
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: trained.append(1))
+    results = run_experiment(config, corpus=corpus)
+
+    assert trained == []
+    assert path.exists()
+    assert results["SV"][("OS", "OS")].mean == first["SV"][("OS", "OS")].mean
+
+
+def test_run_experiment_skips_trial_scores_of_completed_runs_without_their_checkpoint():
+    corpus = _tiny_stub_corpus()
+    config = _continuation_config(1, keep_checkpoints=False)
+    first = run_experiment(config, corpus=corpus)
+    path = experiment_module._trial_scores_path(config, "OS", 0)
+    path.unlink()
+
+    results = run_experiment(config, corpus=corpus)
+
+    assert not path.exists()
+    assert results["SV"][("OS", "OS")].mean == first["SV"][("OS", "OS")].mean

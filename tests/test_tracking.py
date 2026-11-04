@@ -15,10 +15,11 @@ def test_log_summary_and_finish_are_safe_noops_for_no_run():
     tracking.log(None, {"a": 1})
     tracking.log_line_series(None, "chart", [1], {"a": [1]}, "title", "x")
     tracking.log_summary(None, {"a": 1})
+    tracking.log_artifact(None, "name", "trial-scores", "missing.npz")
     tracking.finish(None)
 
 
-def test_enabled_config_in_disabled_mode_starts_a_real_run_without_network():
+def test_enabled_config_in_disabled_mode_starts_a_real_run_without_network(tmp_path):
     # wandb's own mode="disabled" fully no-ops (no login/network needed), so this
     # exercises the real wandb.init/log/summary/finish call path in CI.
     config = WandbConfig(enabled=True, mode="disabled", project="pytest-project")
@@ -28,6 +29,9 @@ def test_enabled_config_in_disabled_mode_starts_a_real_run_without_network():
     tracking.log(run, {"train/loss": 0.5}, step=0)
     tracking.log_summary(run, {"final/SV_EER_test-OS": 0.1})
     tracking.log_line_series(run, "final/chart", [64, 134], {"run0": [30.0, 20.0]}, "title", "x")
+    artifact_path = tmp_path / "run0-trials.npz"
+    artifact_path.write_bytes(b"")
+    tracking.log_artifact(run, "run-name-run0-trials", "trial-scores", artifact_path, metadata={"run_idx": 0})
     tracking.finish(run)
 
 

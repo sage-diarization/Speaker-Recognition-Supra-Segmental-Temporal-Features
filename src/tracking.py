@@ -67,6 +67,17 @@ def log_line_series(run, key, xs, series, title, xname):
         run.log({key: wandb.plot.line_series(xs=xs, ys=list(series.values()), keys=list(series), title=title, xname=xname)})
 
 
+def log_artifact(run, name, artifact_type, path, metadata=None):
+    """Uploads the file at path as a new version of the wandb artifact name
+    -- e.g. src/experiment.py's per-trial scores of one run."""
+    if run is not None:
+        import wandb
+
+        artifact = wandb.Artifact(name, type=artifact_type, metadata=metadata)
+        artifact.add_file(str(path))
+        run.log_artifact(artifact)
+
+
 def finish(run):
     if run is not None:
         run.finish()

@@ -34,16 +34,12 @@ from .device import resolve_device
 from .evaluation.clustering import best_misclassification_rate
 from .evaluation.verification import (
     IndexedTrials,
-    all_pairs_min_dcf,
     all_pairs_scores,
     eer_from_scores,
-    equal_error_rate,
     indexed_trial_equal_error_rate,
-    indexed_trial_min_dcf,
     indexed_trial_scores,
     min_dcf,
     trial_list_equal_error_rate,
-    trial_list_min_dcf,
     trial_list_scores,
 )
 from .models.losses import build_loss
@@ -481,6 +477,24 @@ def _embedding_cache_dir(config, train_strategy, run_idx):
     return _sweep_dir(config, train_strategy) / f"run{run_idx}-embeddings"
 
 
+def _trial_scores_path(config, train_strategy, run_idx):
+    return _sweep_dir(config, train_strategy) / f"run{run_idx}-trials.npz"
+
+
+def _save_trial_scores(path, labels, scores):
+    """Every trial's label (1: same speaker) and its score under each test
+    strategy ({name: scores}), in trial-list order. Trials a gapped strategy
+    couldn't score (see _scored_trials) keep their NaN, so the arrays stay
+    aligned across strategies."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.stem + ".tmp.npz")
+    np.savez_compressed(
+        tmp_path, labels=np.asarray(labels, dtype=np.int8),
+        **{name: np.asarray(values, dtype=np.float32) for name, values in scores.items()},
+    )
+    os.replace(tmp_path, path)
+
+
 def _manifest_path(config, train_strategy):
     return _sweep_dir(config, train_strategy) / "manifest.json"
 
@@ -567,12 +581,6 @@ def run_experiment(config, corpus=None, strategies=None):
         )
         sc_utterances = None
 
-        def sv_eval_fn(embeddings, utterance_ids):
-            return trial_list_equal_error_rate(embeddings, utterance_ids, corpus.trial_pairs)
-
-        def sv_min_dcf_fn(embeddings, utterance_ids):
-            return trial_list_min_dcf(embeddings, utterance_ids, corpus.trial_pairs)
-
         def sv_scores_fn(embeddings, utterance_ids):
             return trial_list_scores(embeddings, utterance_ids, corpus.trial_pairs)
 
@@ -599,12 +607,6 @@ def run_experiment(config, corpus=None, strategies=None):
         sv_eval_utterances, eval_trials = _lazy_indexed_trial_utterances(corpus, transformation, segment_length)
         sc_utterances = None
 
-        def sv_eval_fn(embeddings, utterance_ids):
-            return indexed_trial_equal_error_rate(embeddings, utterance_ids, eval_trials)
-
-        def sv_min_dcf_fn(embeddings, utterance_ids):
-            return indexed_trial_min_dcf(embeddings, utterance_ids, eval_trials)
-
         def sv_scores_fn(embeddings, utterance_ids):
             return indexed_trial_scores(embeddings, utterance_ids, eval_trials, chunk_size=200_000)
 
@@ -628,8 +630,6 @@ def run_experiment(config, corpus=None, strategies=None):
         sc_utterances = build_sc_utterances(
             corpus, "TEST", transformation, config.evaluation.sc_num_speakers, config.evaluation.sc_speakers
         )
-        sv_eval_fn = equal_error_rate
-        sv_min_dcf_fn = all_pairs_min_dcf
         sv_scores_fn = all_pairs_scores
         # train()'s own default (trainer.py's equal_error_rate) is exactly
         # this same function -- no need to route dev-eval through this
@@ -738,7 +738,10 @@ def run_experiment(config, corpus=None, strategies=None):
             quality checks, when configured: paired trial-bootstrap intervals
             (evaluation.sst_bootstrap_resamples) and the placebo, every GS{b}
             scored again with a second permutation seed
-            (evaluation.sst_placebo).
+            (evaluation.sst_placebo). Every trial's score under each of them
+            (and under each placebo, as "{GS{b}}-placebo") is then saved to
+            _trial_scores_path and logged as the wandb artifact
+            "{sweep key}-run{run_idx}-trials", e.g. for DET curves.
 
             GO{b}/GS{b} are scored only on the trials whose utterances are
             long enough for their fixed gaps (see _scored_trials); the
@@ -761,15 +764,17 @@ def run_experiment(config, corpus=None, strategies=None):
                 )
             if any(_gapped(test_strategy) for test_strategy in strategies_to_test):
                 record["sst_gap_ratio"] = gap_ratio
+            # Every trial's label and its score under each strategy, NaN where a
+            # gapped strategy couldn't score it.
+            trial_labels, trial_scores = None, {}
             for test_strategy in strategies_to_test:
-                sv_embeddings, sv_labels = sv_by_strategy[test_strategy]
+                trial_labels, trial_scores[test_strategy] = sv_scores_fn(*sv_by_strategy[test_strategy])
+                labels, scores = trial_labels, trial_scores[test_strategy]
                 if _gapped(test_strategy):
-                    labels, scores = _scored_trials(*sv_scores_fn(sv_embeddings, sv_labels))
-                    eer, dcf = eer_from_scores(labels, scores), min_dcf(labels, scores)
+                    labels, scores = _scored_trials(labels, scores)
                     print(f"==> {test_strategy}: scored {len(labels)} trials long enough for its gaps", flush=True)
                     summary[f"run{run_idx}/final/SV_trials_test-{test_strategy}"] = len(labels)
-                else:
-                    eer, dcf = sv_eval_fn(sv_embeddings, sv_labels), sv_min_dcf_fn(sv_embeddings, sv_labels)
+                eer, dcf = eer_from_scores(labels, scores), min_dcf(labels, scores)
                 record["sv"][test_strategy] = eer
                 summary[f"run{run_idx}/final/SV_EER_test-{test_strategy}"] = eer * 100
                 record.setdefault("sv_min_dcf", {})[test_strategy] = dcf
@@ -788,12 +793,12 @@ def run_experiment(config, corpus=None, strategies=None):
             if set(strategies_to_test) != set(test_strategies):
                 return summary
             if config.evaluation.sst_bootstrap_resamples:
-                labels, scores = None, {}
-                for test_strategy in test_strategies:
-                    if test_strategy == "OS" or test_strategy[:2] in ("BS", "GO", "GS"):
-                        labels, scores[test_strategy] = sv_scores_fn(*sv_by_strategy[test_strategy])
+                scores = {
+                    test_strategy: trial_scores[test_strategy] for test_strategy in test_strategies
+                    if test_strategy == "OS" or test_strategy[:2] in ("BS", "GO", "GS")
+                }
                 record["sst_ci"] = sst_bootstrap_intervals(
-                    labels, scores, config.evaluation.sst_bootstrap_resamples, np.random.default_rng(run_idx)
+                    trial_labels, scores, config.evaluation.sst_bootstrap_resamples, np.random.default_rng(run_idx)
                 ) if scores else {}
                 for key, (low, high) in record["sst_ci"].items():
                     summary[f"run{run_idx}/final/SST_{key}_ci_low"] = low * 100
@@ -807,13 +812,21 @@ def run_experiment(config, corpus=None, strategies=None):
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
                     resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), gap_ratio=gap_ratio,
                 ) if gs_strategies else {}
+                for test_strategy in gs_strategies:
+                    _, trial_scores[f"{test_strategy}-placebo"] = sv_scores_fn(*placebo_by_strategy[test_strategy])
                 record["sst_placebo"] = {
-                    f"b{test_strategy[2:]}": eer_from_scores(*_scored_trials(*sv_scores_fn(*placebo_by_strategy[test_strategy])))
+                    f"b{test_strategy[2:]}": eer_from_scores(*_scored_trials(trial_labels, trial_scores[f"{test_strategy}-placebo"]))
                     - record["sv"][test_strategy]
                     for test_strategy in gs_strategies
                 }
                 for block, value in record["sst_placebo"].items():
                     summary[f"run{run_idx}/final/SST_placebo_{block}"] = value * 100
+            trial_scores_path = _trial_scores_path(config, train_strategy, run_idx)
+            _save_trial_scores(trial_scores_path, trial_labels, trial_scores)
+            tracking.log_artifact(
+                run, f"{_sweep_key(config, train_strategy)}-run{run_idx}-trials", "trial-scores", trial_scores_path,
+                metadata={"run_idx": run_idx, "strategies": list(trial_scores), "sst_gap_ratio": gap_ratio},
+            )
             return summary
 
         def log_run(run_idx, record, summary):
@@ -842,19 +855,23 @@ def run_experiment(config, corpus=None, strategies=None):
                 (config.evaluation.sst_bootstrap_resamples and "sst_ci" not in completed_record)
                 or (config.evaluation.sst_placebo and "sst_placebo" not in completed_record)
             )
-            if missing or quality_missing:
-                # The quality checks need every strategy's scores, which the
-                # manifest doesn't keep: score them all again.
-                if config.evaluation.sst_bootstrap_resamples or config.evaluation.sst_placebo:
-                    missing = list(test_strategies)
-                # Scored from the run's kept best weights (training.keep_checkpoints),
-                # or, for a pretrained model (num_epochs 0), from its own.
-                best_path = best_checkpoint_path(_checkpoint_path(config, train_strategy, run_idx))
-                if config.training.num_epochs > 0 and not best_path.exists():
-                    raise ValueError(
-                        f"{manifest_path} has completed runs never evaluated under {missing}, and their best "
-                        "checkpoint is gone; set a different wandb.run_postfix to train a fresh sweep"
-                    )
+            trials_missing = not _trial_scores_path(config, train_strategy, run_idx).exists()
+            # Scored from the run's kept best weights (training.keep_checkpoints),
+            # or, for a pretrained model (num_epochs 0), from its own.
+            best_path = best_checkpoint_path(_checkpoint_path(config, train_strategy, run_idx))
+            checkpoint_gone = config.training.num_epochs > 0 and not best_path.exists()
+            if (missing or quality_missing) and checkpoint_gone:
+                raise ValueError(
+                    f"{manifest_path} has completed runs never evaluated under {missing}, and their best "
+                    "checkpoint is gone; set a different wandb.run_postfix to train a fresh sweep"
+                )
+            if trials_missing and checkpoint_gone:
+                print(f"==> Run {run_idx} has no saved trial scores, and its best checkpoint is gone to score them", flush=True)
+            elif missing or quality_missing or trials_missing:
+                # The quality checks and the saved trial scores need every
+                # strategy's scores, which the manifest doesn't keep: score
+                # them all again.
+                missing = list(test_strategies)
                 print(f"==> Evaluating completed run {run_idx} under {missing}", flush=True)
                 model = build_model(config)
                 if config.training.num_epochs > 0:
