@@ -88,6 +88,22 @@ def gapped_segment(data, segment_length, block_size, gap, position):
     ])
 
 
+def consecutive_gap_segment(data, segment_length, block_size, gap, position):
+    """gapped_segment's span and number of frames, but with all of its
+    gaps' frames removed as one consecutive cut in the middle: the first
+    segment_length // 2 frames of the span, then the rest after skipping
+    (ceil(segment_length / block_size) - 1) * gap frames. One join instead of
+    one per gap, so against gapped_segment it tells the many short gaps
+    apart from losing the same amount of signal at once. Starts and ends on
+    the same frames as gapped_segment at the same position."""
+    span = gapped_span(segment_length, block_size, gap)
+    if data.shape[0] < span:
+        raise ValueError(f"utterance length {data.shape[0]} is shorter than the gapped span {span}")
+    start = round(position * (data.shape[0] - span))
+    head = segment_length // 2
+    return np.concatenate([data[start:start + head], data[start + span - (segment_length - head):start + span]])
+
+
 def draw_go(data, segment_length, rng=None, *, block_size, gap):
     """Gapped, Ordered blocks (the control C_b): gapped_segment at a random
     position. Its joins splice frames that were never adjacent, like GS's,
@@ -103,6 +119,13 @@ def draw_gs(data, segment_length, rng=None, *, block_size, gap):
     neighbours, so they can be rougher (see temporal_probes.join_discontinuity)."""
     rng = rng or np.random.default_rng()
     return shuffle_blocks(draw_go(data, segment_length, rng, block_size=block_size, gap=gap), block_size, rng)
+
+
+def draw_gc(data, segment_length, rng=None, *, block_size, gap):
+    """Gapped, Consecutive cut: consecutive_gap_segment at a random position,
+    removing as many frames as GO{b}'s gaps but in one piece."""
+    rng = rng or np.random.default_rng()
+    return consecutive_gap_segment(data, segment_length, block_size, gap, rng.random())
 
 
 def draw_mixture(data, segment_length, rng=None, choices=()):
@@ -133,5 +156,6 @@ DRAW_STRATEGIES = {
     # frames) is passed by the evaluation (see trainer._eval_windows).
     **{f"GO{b}": functools.partial(draw_go, block_size=b) for b in BLOCK_SIZES},
     **{f"GS{b}": functools.partial(draw_gs, block_size=b) for b in BLOCK_SIZES},
+    **{f"GC{b}": functools.partial(draw_gc, block_size=b) for b in BLOCK_SIZES},
     **{name: functools.partial(draw_mixture, choices=choices) for name, choices in MIXTURES.items()},
 }

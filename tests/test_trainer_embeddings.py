@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from src.models.common import BackendOutput
 from src.training.trainer import extract_embeddings
@@ -333,6 +334,19 @@ def test_eval_windows_gap_scales_with_the_block_size():
         assert set(np.diff(window[:, 0])) == {1, block_size + 1}  # gaps of block_size frames
 
 
+def test_eval_windows_gc_cuts_the_gos_gap_frames_in_one_piece():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(200, dtype=np.float32)[:, None]
+    go = _eval_windows(features, 40, 20, 5, "GO8", np.random.default_rng(0), gap_ratio=0.75)
+    gc = _eval_windows(features, 40, 20, 5, "GC8", np.random.default_rng(0), gap_ratio=0.75)
+    for go_window, gc_window in zip(go, gc):
+        assert gc_window.shape == go_window.shape
+        np.testing.assert_array_equal(gc_window[[0, -1]], go_window[[0, -1]])  # same span
+        assert sorted(np.diff(gc_window[:, 0])) == [1] * 38 + [1 + 4 * 6]  # one cut of 4 gaps of 6
+    assert _eval_windows(features[:60], 40, 20, 2, "GC8", np.random.default_rng(0), gap_ratio=0.75) == []
+
+
 def test_eval_windows_go_and_gs_draw_nothing_from_an_utterance_too_short_for_the_gaps():
     from src.training.trainer import _eval_windows
 
@@ -402,3 +416,39 @@ def test_join_discontinuity_finds_joins_next_to_a_shorter_last_block():
     distances = join_discontinuity([(features, 0)], 44, ["GS16"], gap_ratio=0.625)  # blocks of 16, 16, 12
     # No join is a step between neighbouring frames, wherever the 12-frame block lands.
     assert np.all(distances["GS16"] > 1.0)
+
+
+class _PathLengthModel(_MeanModel):
+    """Embeds a segment as the summed distance between its consecutive
+    frames: how far the segment travels, joins included."""
+
+    def __call__(self, x):
+        steps = torch.linalg.norm(x[:, 0, 1:] - x[:, 0, :-1], dim=-1)
+        return BackendOutput(backend=steps.sum(dim=1, keepdim=True), bottleneck=None)
+
+
+def test_utterance_join_roughness_measures_the_joins_of_the_embedded_windows():
+    from src.evaluation.temporal_probes import utterance_join_roughness
+    from src.training.trainer import extract_embeddings_by_strategy
+
+    # Ramps: frame t is t in all 4 bands, so neighbouring frames are 2.0 apart.
+    ramp = lambda length: np.repeat(np.arange(length, dtype=np.float32)[:, None], 4, axis=1)  # noqa: E731
+    # 30 frames: no window at all (skipped); 60: too short for the gaps (NaN).
+    utterances = [(ramp(200), "a"), (ramp(30), "short"), (ramp(60), "gapless"), (ramp(260), "b")]
+    strategies = ["GO8", "GS8"]
+    roughness, labels = utterance_join_roughness(utterances, 40, strategies, seed=3, gap_ratio=1.25)
+    embeddings = extract_embeddings_by_strategy(
+        _PathLengthModel(), utterances, 40, {s: np.random.default_rng(3) for s in strategies}, gap_ratio=1.25
+    )
+
+    assert labels == ["a", "gapless", "b"] == list(embeddings["GS8"][1])
+    np.testing.assert_allclose(roughness["GO8"][[0, 2]], (1 + 10) * 2.0)  # one block and a gap of 10 forward
+    assert np.isnan(roughness["GO8"][1]) and np.isnan(roughness["GS8"][1])
+    # 5 blocks of 8 frames, 4 joins per window, every other step 2.0 long:
+    # the embedding is the path length of exactly the joins measured.
+    for strategy in strategies:
+        path_length = embeddings[strategy][0][[0, 2], 0]
+        np.testing.assert_allclose(path_length, (39 - 4) * 2.0 + 4 * roughness[strategy][[0, 2]], rtol=1e-5)
+    # Another seed draws other block orders, with other joins.
+    other, _ = utterance_join_roughness(utterances, 40, ["GS8"], seed=4, gap_ratio=1.25)
+    assert not np.allclose(other["GS8"][[0, 2]], roughness["GS8"][[0, 2]])

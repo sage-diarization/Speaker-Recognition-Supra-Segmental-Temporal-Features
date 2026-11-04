@@ -151,3 +151,33 @@ def test_gs_shuffles_exactly_the_blocks_of_the_matching_go_draw(utterance, block
 
 def test_draw_strategies_register_gapped_block_pairs():
     assert {"GO8", "GS8", "GO64", "GS64"} <= set(DRAW_STRATEGIES)
+
+
+def test_consecutive_gap_segment_removes_the_gaps_frames_in_one_cut(utterance):
+    from src.data.segments import consecutive_gap_segment, gapped_segment
+
+    # 6 blocks of 16 with gaps of 10 span 146 frames: keep 48, skip 50, keep 48.
+    rows = consecutive_gap_segment(utterance, 96, 16, 10, 0.0)[:, 0] / 8
+    np.testing.assert_array_equal(rows, np.concatenate([np.arange(48), np.arange(48) + 98]))
+    for position in (0.0, 0.3, 1.0):
+        go = gapped_segment(utterance, 96, 16, 10, position)
+        gc = consecutive_gap_segment(utterance, 96, 16, 10, position)
+        assert gc.shape == go.shape
+        np.testing.assert_array_equal(gc[[0, -1]], go[[0, -1]])
+
+
+def test_consecutive_gap_segment_without_gaps_is_a_contiguous_crop(utterance):
+    from src.data.segments import consecutive_gap_segment
+
+    np.testing.assert_array_equal(consecutive_gap_segment(utterance, 96, 128, 128, 0.0), utterance[:96])
+
+
+def test_consecutive_gap_segment_raises_when_utterance_too_short_for_the_gaps(utterance):
+    from src.data.segments import consecutive_gap_segment
+
+    with pytest.raises(ValueError):
+        consecutive_gap_segment(utterance[:145], 96, 16, 10, 0.0)
+
+
+def test_draw_strategies_register_consecutive_gap_cuts():
+    assert {"GC8", "GC64"} <= set(DRAW_STRATEGIES)

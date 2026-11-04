@@ -49,14 +49,53 @@ def join_discontinuity(utterances, segment_length, strategies, seed=0, hop_fract
         num_windows = (features.shape[0] - segment_length) // step + 1
         for window in _eval_windows(features, segment_length, step, num_windows, "OS", None):
             distances["adjacent"].append(np.linalg.norm(np.diff(window, axis=0), axis=1))
-        frame_indices = np.arange(features.shape[0])[:, None]
         for strategy in strategies:
-            windows = _eval_windows(features, segment_length, step, num_windows, strategy, rngs[strategy][0], gap_ratio)
-            sources = _eval_windows(frame_indices, segment_length, step, num_windows, strategy, rngs[strategy][1], gap_ratio)
-            for window, source in zip(windows, sources):
-                joins = np.flatnonzero(np.diff(source[:, 0]) != 1) + 1
-                distances[strategy].append(np.linalg.norm(window[joins] - window[joins - 1], axis=1))
+            distances[strategy].extend(
+                _join_distances(features, segment_length, step, num_windows, strategy, rngs[strategy], gap_ratio)
+            )
     return {strategy: np.concatenate(values) for strategy, values in distances.items()}
+
+
+def utterance_join_roughness(utterances, segment_length, strategies, seed=0, hop_fraction=0.5, gap_ratio=None):
+    """Mean distance between the two frames at the joins of each
+    utterance's evaluation windows (see join_discontinuity), per strategy.
+    One value per row of extract_embeddings_by_strategy's embeddings: drawn
+    with the same seed (a Generator default_rng(seed) per strategy, as the
+    final evaluation draws with default_rng(run_idx)), these are the joins
+    of exactly the windows and block orders that were embedded. NaN for an
+    utterance without joins, e.g. one too short for GO{b}/GS{b}'s gaps
+    (whose embedding is NaN too). Returns ({strategy: 1-D array}, labels),
+    labels as extract_embeddings_by_strategy returns them, to check the
+    rows line up."""
+    step = max(int(hop_fraction * segment_length), 1)
+    rngs = {strategy: (np.random.default_rng(seed), np.random.default_rng(seed)) for strategy in strategies}
+    roughness, labels = {strategy: [] for strategy in strategies}, []
+    for features, label in resolved_utterances(utterances):
+        if features.shape[0] <= segment_length:
+            continue
+        num_windows = (features.shape[0] - segment_length) // step + 1
+        for strategy in strategies:
+            distances = _join_distances(features, segment_length, step, num_windows, strategy, rngs[strategy], gap_ratio)
+            joined = np.concatenate(distances) if distances else np.empty(0)
+            roughness[strategy].append(joined.mean() if joined.size else np.nan)
+        labels.append(label)
+    return {strategy: np.array(values) for strategy, values in roughness.items()}, labels
+
+
+def _join_distances(features, segment_length, step, num_windows, strategy, rngs, gap_ratio):
+    """Per evaluation window of strategy, the distances between the two
+    frames at each of its joins. rngs holds two identically seeded
+    Generators: one draws the windows from the features, the other the
+    same windows from the frame indices, which locate the joins (see
+    join_discontinuity)."""
+    windows = _eval_windows(features, segment_length, step, num_windows, strategy, rngs[0], gap_ratio)
+    frame_indices = np.arange(features.shape[0])[:, None]
+    sources = _eval_windows(frame_indices, segment_length, step, num_windows, strategy, rngs[1], gap_ratio)
+    distances = []
+    for window, source in zip(windows, sources):
+        joins = np.flatnonzero(np.diff(source[:, 0]) != 1) + 1
+        distances.append(np.linalg.norm(window[joins] - window[joins - 1], axis=1))
+    return distances
 
 
 def attention_offset_profiles(model, segments):

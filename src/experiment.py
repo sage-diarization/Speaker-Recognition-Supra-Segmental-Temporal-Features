@@ -360,9 +360,9 @@ def sst_bracket(eers, block_size):
 
 
 def _gapped(strategy):
-    """Whether a test strategy is GO{b}/GS{b}, scored only on the trials
-    whose utterances are long enough for its fixed gaps."""
-    return strategy.startswith(("GO", "GS"))
+    """Whether a test strategy is GO{b}/GS{b}/GC{b}, scored only on the
+    trials whose utterances are long enough for its fixed gaps."""
+    return strategy.startswith(("GO", "GS", "GC"))
 
 
 def _scored_trials(labels, scores):
@@ -400,6 +400,46 @@ def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
                 samples.setdefault(f"{measure}_b{block_size}", []).append(value)
     tail = (1 - level) / 2
     return {key: (float(np.quantile(values, tail)), float(np.quantile(values, 1 - tail))) for key, values in samples.items()}
+
+
+def sst_by_roughness_gap(labels, go_scores, gs_scores, roughness_gap, num_bins, num_resamples, rng, level=0.95):
+    """L(b) = EER(GS_b) - EER(GO_b) per stratum of trials binned by their
+    roughness gap: how much rougher GS_b's joins are than GO_b's, e.g. the
+    mean over a trial's two utterances of
+    temporal_probes.utterance_join_roughness's GS_b minus GO_b. If L(b)
+    stays flat as the gap approaches 0, GS's rougher joins aren't what
+    drives L(b). The bins are quantiles of the gap, so they hold equally
+    many trials, and GO_b and GS_b are scored on the same trials in each,
+    so each bin's L(b) is paired, with a percentile interval over
+    num_resamples resamples of its trials (as sst_bootstrap_intervals).
+    Trials without a GO/GS score or a gap are left out.
+
+    Returns {"gap": median gap per bin, "L": L(b) per bin, "ci_low",
+    "ci_high": its interval per bin, "trials": trials per bin}, arrays over
+    the bins in order of increasing gap."""
+    labels, go_scores, gs_scores, roughness_gap = (
+        np.asarray(values) for values in (labels, go_scores, gs_scores, roughness_gap)
+    )
+    keep = np.isfinite(go_scores) & np.isfinite(gs_scores) & np.isfinite(roughness_gap)
+    labels, go_scores, gs_scores, roughness_gap = labels[keep], go_scores[keep], gs_scores[keep], roughness_gap[keep]
+    edges = np.quantile(roughness_gap, np.linspace(0, 1, num_bins + 1))
+    bins = np.clip(np.searchsorted(edges, roughness_gap, side="right") - 1, 0, num_bins - 1)
+    tail = (1 - level) / 2
+    result = {key: [] for key in ("gap", "L", "ci_low", "ci_high", "trials")}
+    for i in range(num_bins):
+        members = np.flatnonzero(bins == i)
+        bin_labels, bin_go, bin_gs = labels[members], go_scores[members], gs_scores[members]
+
+        def cost(sample):
+            return eer_from_scores(bin_labels[sample], bin_gs[sample]) - eer_from_scores(bin_labels[sample], bin_go[sample])
+
+        resamples = [cost(rng.integers(0, len(members), len(members))) for _ in range(num_resamples)]
+        result["gap"].append(np.median(roughness_gap[members]))
+        result["L"].append(cost(slice(None)))
+        result["ci_low"].append(np.quantile(resamples, tail))
+        result["ci_high"].append(np.quantile(resamples, 1 - tail))
+        result["trials"].append(len(members))
+    return {key: np.array(values) for key, values in result.items()}
 
 
 def _log_eer_by_block(run, key, eers_by_strategy, segment_length, transformation, title):

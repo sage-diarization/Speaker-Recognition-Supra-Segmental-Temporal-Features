@@ -1217,3 +1217,29 @@ def test_run_experiment_evaluates_a_completed_pretrained_run_under_new_test_stra
     manifest = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))
     assert all("SS" in record["sv"] for record in manifest["completed"].values())
     assert ("OS", "SS") in results["SV"]
+
+
+def test_sst_by_roughness_gap_follows_a_cost_that_grows_with_the_gap():
+    rng = np.random.default_rng(0)
+    labels = np.tile([1, 0], 2000)
+    go = rng.normal(labels * 2.0, 1.0)
+    gap = rng.uniform(0, 1, len(labels))
+    # GS loses target score in proportion to its roughness gap, no SST cost otherwise.
+    gs = go - 2.0 * gap * labels
+    gs[:10] = np.nan  # too short for the gaps
+    strata = experiment_module.sst_by_roughness_gap(labels, go, gs, gap, 4, 50, np.random.default_rng(1))
+
+    assert strata["trials"].sum() == len(labels) - 10
+    assert np.all(np.diff(strata["gap"]) > 0)
+    assert np.all(np.diff(strata["L"]) > 0)
+    assert np.all((strata["ci_low"] <= strata["L"]) & (strata["L"] <= strata["ci_high"]))
+
+
+def test_sst_by_roughness_gap_is_zero_in_every_bin_when_gs_scores_like_go():
+    rng = np.random.default_rng(0)
+    labels = np.tile([1, 0], 500)
+    go = rng.normal(labels * 1.5, 1.0)
+    strata = experiment_module.sst_by_roughness_gap(labels, go, go.copy(), rng.uniform(size=1000), 3, 20, np.random.default_rng(1))
+    np.testing.assert_array_equal(strata["L"], 0.0)
+    np.testing.assert_array_equal(strata["ci_low"], 0.0)
+    np.testing.assert_array_equal(strata["ci_high"], 0.0)
