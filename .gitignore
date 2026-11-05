@@ -149,3 +149,4 @@ checkpoints/
 # MyST build outputs
 _build
 exports
+doc/artifacts

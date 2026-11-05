@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --time=240
+#SBATCH --job-name=sst/measure-decorrelation-voxceleb-hard
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+# Measures d*, the frame separation at which two frames of a VoxCeleb1-H
+# trial utterance are about as unrelated as two random ones (see
+# src/measure_decorrelation.py), in the config's input features.
+# Usage: sbatch slurm/measure-decorrelation-voxceleb-hard.submit [CONFIG]
+source slurm/install.submit
+source slurm/stage-voxceleb.submit
+
+CONFIG="${1:-configs/pretrained-resnet34-voxceleb-2s.yaml}"
+python3 -u -m src.measure_decorrelation \
+	--config "$CONFIG" \
+	--output "logs/${SLURM_JOB_ID}-decorrelation-$(basename "$CONFIG" .yaml).npz"
+
+echo "Done."
