@@ -455,6 +455,11 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
     return history, paper_comparable_best
 
 
+# How _eval_windows places GO{b}/GS{b}/GC{b} windows; recorded with their
+# scores, so scores drawn otherwise get rescored (see src/experiment.py).
+GAPPED_WINDOWS = "one, centered"
+
+
 def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap_ratio=None):
     """Builds the num_windows hop-window segments for one utterance, matching
     context/src/setup/setup.py's precomputed EVAL distributions -- the ones
@@ -483,12 +488,16 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
 
     GO{b}/GS{b} windows instead take b-frame blocks with fixed gaps of
     round(gap_ratio * b) frames between them
-    (src/data/segments.py::gapped_segment), the
-    num_windows windows at evenly-spaced positions through the utterance.
-    The positions use no randomness, so GO{b} and GS{b} take the same
-    blocks in every window and differ only in GS{b}'s block order. GC{b}
-    windows sit at the same positions and span, but remove all of GO{b}'s
-    gap frames as one consecutive cut (src/data/segments.py::
+    (src/data/segments.py::gapped_segment), in one window in the middle of
+    the utterance (GAPPED_WINDOWS), whatever num_windows: several windows at
+    shifted positions would see each other's gap frames, so the utterance's
+    embedding would lose a share of its frames that depends on b and the
+    utterance's length, and none for GC{b}. With one window, GO{b}, GS{b}
+    and GC{b} all leave exactly the span's gap frames (and everything
+    outside the span) unseen. The position uses no randomness, so GO{b} and
+    GS{b} take the same blocks and differ only in GS{b}'s block order. GC{b}'s
+    window has the same position and span, but removes all of GO{b}'s gap
+    frames as one consecutive cut (src/data/segments.py::
     consecutive_gap_segment). An utterance too short for the gaps gets no
     windows (an empty list)."""
     if draw_strategy.startswith(("GO", "GS", "GC")):
@@ -497,6 +506,7 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
         block_size = int(draw_strategy[2:])
         if features.shape[0] < gapped_span(segment_length, block_size, round(gap_ratio * block_size)):
             return []
+        num_windows = 1
     if draw_strategy == "SU":
         length = features.shape[0]
         return [features[rng.integers(0, length, segment_length)] for _ in range(num_windows)]
@@ -508,7 +518,7 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
         if strategy.startswith(("GO", "GS", "GC")):
             block_size = int(strategy[2:])
             cut = consecutive_gap_segment if strategy.startswith("GC") else gapped_segment
-            segment = cut(features, segment_length, block_size, round(gap_ratio * block_size), i / max(num_windows - 1, 1))
+            segment = cut(features, segment_length, block_size, round(gap_ratio * block_size), 0.5)
             if strategy.startswith("GS"):
                 segment = shuffle_blocks(segment, block_size, rng)
             segments.append(segment)

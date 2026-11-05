@@ -1137,6 +1137,28 @@ def test_run_experiment_rescores_go_and_gs_of_runs_scored_without_fixed_gaps(mon
     assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_gap_ratio"] == 1.0
 
 
+def test_run_experiment_rescores_go_and_gs_of_runs_scored_in_other_windows(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    config = _continuation_config(2)
+    config.evaluation.test_strategies = ["OS", "GO16", "GS16"]
+    first = run_experiment(config, corpus=corpus)
+    manifest_path = experiment_module._manifest_path(config, "OS")
+    manifest = experiment_module._load_manifest(manifest_path)
+    assert manifest["completed"][0]["sst_gapped_windows"] == experiment_module.GAPPED_WINDOWS
+    # A run scored before one window per utterance: no sst_gapped_windows, other GO/GS EERs.
+    record = manifest["completed"][0]
+    del record["sst_gapped_windows"]
+    record["sv"]["GO16"] = record["sv"]["GS16"] = 0.99
+    experiment_module._save_manifest(manifest_path, manifest)
+
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: pytest.fail("retrained"))
+    results = run_experiment(config, corpus=corpus)
+
+    for test_strategy in ("GO16", "GS16"):
+        assert results["SV"][("OS", test_strategy)].mean == pytest.approx(first["SV"][("OS", test_strategy)].mean)
+    assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_gapped_windows"] == experiment_module.GAPPED_WINDOWS
+
+
 def test_run_experiment_refuses_to_train_on_gapped_strategies():
     config = _continuation_config(1)
     config.training.strategies = ["GO16"]

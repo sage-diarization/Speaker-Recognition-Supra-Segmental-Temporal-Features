@@ -44,7 +44,7 @@ from .evaluation.verification import (
 )
 from .models.losses import build_loss
 from .models.registry import build_model
-from .training.trainer import best_checkpoint_path, extract_embeddings_by_strategy, train
+from .training.trainer import GAPPED_WINDOWS, best_checkpoint_path, extract_embeddings_by_strategy, train
 
 STRATEGIES = ("OS", "SS", "SU")
 
@@ -722,7 +722,7 @@ def run_experiment(config, corpus=None, strategies=None):
             Named by the strategies, so another set never reuses them."""
             if config.training.num_epochs > 0:
                 return None
-            key = hashlib.sha1(f"{','.join(strategies_to_test)};gap_ratio={gap_ratio}".encode()).hexdigest()[:10]
+            key = hashlib.sha1(f"{','.join(strategies_to_test)};gap_ratio={gap_ratio};gapped_windows={GAPPED_WINDOWS}".encode()).hexdigest()[:10]
             return _embedding_cache_dir(config, train_strategy, run_idx) / f"{name}-{key}"
 
         def evaluate(model, run_idx, record, strategies_to_test):
@@ -764,6 +764,7 @@ def run_experiment(config, corpus=None, strategies=None):
                 )
             if any(_gapped(test_strategy) for test_strategy in strategies_to_test):
                 record["sst_gap_ratio"] = gap_ratio
+                record["sst_gapped_windows"] = GAPPED_WINDOWS
             # Every trial's label and its score under each strategy, NaN where a
             # gapped strategy couldn't score it.
             trial_labels, trial_scores = None, {}
@@ -825,7 +826,7 @@ def run_experiment(config, corpus=None, strategies=None):
             _save_trial_scores(trial_scores_path, trial_labels, trial_scores)
             tracking.log_artifact(
                 run, f"{_sweep_key(config, train_strategy)}-run{run_idx}-trials", "trial-scores", trial_scores_path,
-                metadata={"run_idx": run_idx, "strategies": list(trial_scores), "sst_gap_ratio": gap_ratio},
+                metadata={"run_idx": run_idx, "strategies": list(trial_scores), "sst_gap_ratio": gap_ratio, "sst_gapped_windows": GAPPED_WINDOWS},
             )
             return summary
 
@@ -840,10 +841,12 @@ def run_experiment(config, corpus=None, strategies=None):
         for run_idx, completed_record in manifest["completed"].items():
             if run_idx in continued:
                 continue
-            if gapped_strategies and completed_record.get("sst_gap_ratio") != gap_ratio:
+            if gapped_strategies and (completed_record.get("sst_gap_ratio") != gap_ratio
+                                      or completed_record.get("sst_gapped_windows") != GAPPED_WINDOWS):
                 # GO/GS scored with another gap ratio, a gap fixed in seconds
-                # (sst_gap_frames), or with the blocks spread over the whole
-                # utterance (before fixed gaps): score them
+                # (sst_gap_frames), with the blocks spread over the whole
+                # utterance (before fixed gaps), or in other windows than
+                # GAPPED_WINDOWS (before one window per utterance): score them
                 # again, and the quality checks that use them.
                 for key in ("sv", "sv_min_dcf", "sc"):
                     for test_strategy in gapped_strategies:

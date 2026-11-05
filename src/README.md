@@ -210,8 +210,8 @@ and one that keeps them and leans high.
 - **GS{b}** (gapped, shuffled: S_b): the same blocks as GO{b}, in random
   order.
 
-GO{b} and GS{b} take the same blocks in every window
-(`src/training/trainer.py`'s `_eval_windows`), so they have the same
+GO{b} and GS{b} take the same blocks, in one window in the middle of the
+utterance (`src/training/trainer.py`'s `_eval_windows`), so they have the same
 content and the same number of joins, and differ only in block order. The
 joins themselves are not identical: GO{b} always splices block j to block
 j + 1, one gap apart, while GS{b} splices random pairs of blocks, on
@@ -251,6 +251,29 @@ equalize: the number of joins per window (⌈segment / b⌉ − 1) and the
 absolute gap length still change with b, and EER(GO_b) still differs
 across b, so L(b) is still a lower bound per b, not a nested
 decomposition over block sizes.
+
+**Measured d\*.** `src/measure_decorrelation.py`
+(`slurm/measure-decorrelation-voxceleb-hard.submit`) measures how far apart
+two frames of a VoxCeleb1-H utterance have to be to be about as unrelated
+as two random ones: R(d) = D(d) / D_rand reaches 0.95 at d\* = 210 ms
+(ResNet34's fbank frames). 80 ms is too short for that: at r = 1, GO8's
+joins splice frames 90 ms apart (R = 0.82), smoother than GS8's (R ≈ 1.01),
+so L(8) also counts join roughness. The pretrained 2s configs therefore use
+r = 1.25, which meets d\* from b = 16 (10 ms frames) or b = 8 (20 ms
+frames) up and scores the 77% of the trials with both utterances ≥ 4.4 s.
+They keep the smallest b, labeled as confounded in
+`doc/sst-bracket-pretrained.ipynb`, and
+`configs/pretrained-resnet34-voxceleb-2s-r2.5.yaml` checks L(8) at r = 2.5
+(gaps of 20 frames) on the 22% of the trials long enough for its 6.8 s span.
+
+**Why one window per utterance.** With several windows at shifted
+positions, as for OS, each window sees frames that another one's gaps
+leave out. The utterance's embedding (the mean over its windows) then
+misses a share of its frames that depends on b and the utterance's length
+(0–45%), and almost none for GC{b}. With one window, GO{b}, GS{b} and GC{b}
+all leave exactly the span's gap frames, and everything outside the span,
+unseen. Runs scored with other windows are rescored (the manifest's
+`sst_gapped_windows`).
 
 The price is that an utterance shorter than the span of the blocks and
 gaps, segment + (k − 1) · g ≈ segment · (1 + r) frames, can't be drawn. Its GO{b}/GS{b}

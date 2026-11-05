@@ -315,7 +315,8 @@ def test_eval_windows_go_and_gs_take_the_same_blocks_per_window():
     features = np.arange(200 * 3, dtype=np.float32).reshape(200, 3)
     go = _eval_windows(features, 40, 20, 5, "GO8", np.random.default_rng(0), gap_ratio=0.75)
     gs = _eval_windows(features, 40, 20, 5, "GS8", np.random.default_rng(1), gap_ratio=0.75)
-    assert len({window[0, 0] for window in go}) == 5  # windows move through the utterance
+    assert len(go) == len(gs) == 1  # one window per utterance, whatever num_windows
+    assert go[0][0, 0] / 3 == round(0.5 * (200 - 64))  # in the middle: 5 blocks of 8, 4 gaps of 6 span 64
     for go_window, gs_window in zip(go, gs):
         rows = go_window[:, 0] / 3
         assert np.all(np.diff(rows) > 0)  # original order
@@ -400,8 +401,8 @@ def test_join_discontinuity_measures_every_join_and_adjacent_frames():
     num_windows = (200 - 40) // 20 + 1
     np.testing.assert_allclose(distances["adjacent"], 2.0)  # sqrt(4 bands)
     assert len(distances["adjacent"]) == num_windows * 39
-    # GO joins jump forward by one block and one gap of 10 frames.
-    assert len(distances["GO8"]) == num_windows * 4
+    # GO joins jump forward by one block and one gap of 10 frames, in GO's one window.
+    assert len(distances["GO8"]) == 4
     np.testing.assert_allclose(distances["GO8"], (1 + 10) * 2.0)
     assert distances["GS8"].mean() > distances["GO8"].mean()
     # Shuffled blocks that stay original neighbours make no join.

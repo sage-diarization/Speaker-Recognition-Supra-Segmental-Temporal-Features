@@ -45,6 +45,11 @@ evaluation:
   # trial-bootstrap intervals, and every GS{b} scored with a second seed.
   sst_bootstrap_resamples: 200
   sst_placebo: true
+  # Gap of 1.25 * b frames: a GO{b} join then splices frames >= d* = 210 ms
+  # apart (R(d) = 0.95, logs/161641-decorrelation-pretrained-resnet34-voxceleb-2s.npz,
+  # src/measure_decorrelation.py) from b = 8 (175 ms blocks) up; the smallest b's joins stay
+  # smoother than GS's, so its L(b) also counts join roughness.
+  sst_gap_ratio: 1.25
 
 wandb:
   run_postfix: 2s
