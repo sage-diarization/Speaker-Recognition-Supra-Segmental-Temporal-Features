@@ -348,6 +348,20 @@ def test_eval_windows_gc_cuts_the_gos_gap_frames_in_one_piece():
     assert _eval_windows(features[:60], 40, 20, 2, "GC8", np.random.default_rng(0), gap_ratio=0.75) == []
 
 
+def test_eval_windows_oc_is_one_contiguous_window_in_the_gos_span():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(200, dtype=np.float32)[:, None]
+    go = _eval_windows(features, 40, 20, 5, "GO8", np.random.default_rng(0), gap_ratio=0.75)
+    oc = _eval_windows(features, 40, 20, 5, "OC8", np.random.default_rng(0), gap_ratio=0.75)
+    assert len(oc) == len(go) == 1
+    rows, go_rows = oc[0][:, 0], go[0][:, 0]
+    assert oc[0].shape == go[0].shape
+    assert np.all(np.diff(rows) == 1)  # contiguous
+    assert go_rows[0] <= rows[0] and rows[-1] <= go_rows[-1]  # inside GO's span
+    assert _eval_windows(features[:60], 40, 20, 2, "OC8", np.random.default_rng(0), gap_ratio=0.75) == []
+
+
 def test_eval_windows_go_and_gs_draw_nothing_from_an_utterance_too_short_for_the_gaps():
     from src.training.trainer import _eval_windows
 

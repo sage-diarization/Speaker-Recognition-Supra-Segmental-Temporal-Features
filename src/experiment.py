@@ -356,9 +356,9 @@ def sst_bracket(eers, block_size):
 
 
 def _gapped(strategy):
-    """Whether a test strategy is GO{b}/GS{b}/GC{b}, scored only on the
+    """Whether a test strategy is GO{b}/GS{b}/GC{b}/OC{b}, scored only on the
     trials whose utterances are long enough for its fixed gaps."""
-    return strategy.startswith(("GO", "GS", "GC"))
+    return strategy.startswith(("GO", "GS", "GC", "OC"))
 
 
 def _scored_trials(labels, scores):

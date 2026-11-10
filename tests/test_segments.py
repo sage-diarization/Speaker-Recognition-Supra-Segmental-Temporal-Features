@@ -181,3 +181,28 @@ def test_consecutive_gap_segment_raises_when_utterance_too_short_for_the_gaps(ut
 
 def test_draw_strategies_register_consecutive_gap_cuts():
     assert {"GC8", "GC64"} <= set(DRAW_STRATEGIES)
+
+
+def test_centered_segment_is_the_contiguous_middle_of_the_gapped_span(utterance):
+    from src.data.segments import centered_segment, gapped_segment
+
+    # 6 blocks of 16 with gaps of 10 span 146 frames: the middle 96 start 25 in.
+    rows = centered_segment(utterance, 96, 16, 10, 0.0)[:, 0] / 8
+    np.testing.assert_array_equal(rows, np.arange(96) + 25)
+    for position in (0.0, 0.3, 1.0):
+        go_rows = gapped_segment(utterance, 96, 16, 10, position)[:, 0] / 8
+        oc_rows = centered_segment(utterance, 96, 16, 10, position)[:, 0] / 8
+        assert oc_rows.shape == go_rows.shape
+        assert go_rows[0] <= oc_rows[0] and oc_rows[-1] <= go_rows[-1]  # inside the span
+        assert (oc_rows[0] - go_rows[0]) - (go_rows[-1] - oc_rows[-1]) in (0, 1)  # centered
+
+
+def test_centered_segment_raises_when_utterance_too_short_for_the_gaps(utterance):
+    from src.data.segments import centered_segment
+
+    with pytest.raises(ValueError):
+        centered_segment(utterance[:145], 96, 16, 10, 0.0)
+
+
+def test_draw_strategies_register_centered_crops():
+    assert {"OC8", "OC64"} <= set(DRAW_STRATEGIES)

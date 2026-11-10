@@ -35,9 +35,11 @@ training:
 evaluation:
   # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: blocks with gaps of
   # evaluation.sst_gap_ratio * b frames in original/shuffled order, for L(b)
-  # (see src/experiment.py's sst_bracket). One frame per 10 ms: blocks of
+  # (see src/experiment.py's sst_bracket). GC{b}/OC{b}: the same span's frames
+  # in one cut / its contiguous middle, for comparing against OS at equal
+  # input. One frame per 10 ms: blocks of
   # 4/8/16/32/64 frames span 55/95/175/335/655 ms of signal.
-  test_strategies: [OS, SS, BS4, BS8, BS16, BS32, BS64, GO8, GS8, GC8, GO16, GS16, GC16, GO32, GS32, GC32, GO64, GS64, GC64]
+  test_strategies: [OS, SS, BS4, BS8, BS16, BS32, BS64, GO8, GS8, GC8, OC8, GO16, GS16, GC16, OC16, GO32, GS32, GC32, OC32, GO64, GS64, GC64, OC64]
   # Quality checks of the bracket (see src/README.md's "SST bracket"): paired
   # trial-bootstrap intervals, and every GS{b} scored with a second seed.
   sst_bootstrap_resamples: 200

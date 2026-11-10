@@ -104,6 +104,19 @@ def consecutive_gap_segment(data, segment_length, block_size, gap, position):
     return np.concatenate([data[start:start + head], data[start + span - (segment_length - head):start + span]])
 
 
+def centered_segment(data, segment_length, block_size, gap, position):
+    """The segment_length contiguous frames in the middle of gapped_segment's
+    span: an OS crop at the same position, of as many frames and on the
+    same utterances (one too short for the span raises) as gapped_segment
+    and consecutive_gap_segment, so against them it only differs in being
+    one unbroken piece."""
+    span = gapped_span(segment_length, block_size, gap)
+    if data.shape[0] < span:
+        raise ValueError(f"utterance length {data.shape[0]} is shorter than the gapped span {span}")
+    start = round(position * (data.shape[0] - span)) + (span - segment_length) // 2
+    return data[start:start + segment_length].copy()
+
+
 def draw_go(data, segment_length, rng=None, *, block_size, gap):
     """Gapped, Ordered blocks (the control C_b): gapped_segment at a random
     position. Its joins splice frames that were never adjacent, like GS's,
@@ -126,6 +139,13 @@ def draw_gc(data, segment_length, rng=None, *, block_size, gap):
     removing as many frames as GO{b}'s gaps but in one piece."""
     rng = rng or np.random.default_rng()
     return consecutive_gap_segment(data, segment_length, block_size, gap, rng.random())
+
+
+def draw_oc(data, segment_length, rng=None, *, block_size, gap):
+    """Original, Centered: centered_segment at a random position, the
+    contiguous control GO{b}/GS{b}/GC{b} are compared against."""
+    rng = rng or np.random.default_rng()
+    return centered_segment(data, segment_length, block_size, gap, rng.random())
 
 
 def draw_mixture(data, segment_length, rng=None, choices=()):
@@ -157,5 +177,6 @@ DRAW_STRATEGIES = {
     **{f"GO{b}": functools.partial(draw_go, block_size=b) for b in BLOCK_SIZES},
     **{f"GS{b}": functools.partial(draw_gs, block_size=b) for b in BLOCK_SIZES},
     **{f"GC{b}": functools.partial(draw_gc, block_size=b) for b in BLOCK_SIZES},
+    **{f"OC{b}": functools.partial(draw_oc, block_size=b) for b in BLOCK_SIZES},
     **{name: functools.partial(draw_mixture, choices=choices) for name, choices in MIXTURES.items()},
 }

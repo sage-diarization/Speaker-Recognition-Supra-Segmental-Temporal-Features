@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from .. import tracking
 from ..data.lazy_features import resolve_features
-from ..data.segments import MIXTURES, consecutive_gap_segment, gapped_segment, gapped_span, shuffle_blocks
+from ..data.segments import MIXTURES, centered_segment, consecutive_gap_segment, gapped_segment, gapped_span, shuffle_blocks
 from ..evaluation.verification import equal_error_rate
 
 
@@ -498,9 +498,12 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     GS{b} take the same blocks and differ only in GS{b}'s block order. GC{b}'s
     window has the same position and span, but removes all of GO{b}'s gap
     frames as one consecutive cut (src/data/segments.py::
-    consecutive_gap_segment). An utterance too short for the gaps gets no
+    consecutive_gap_segment). OC{b}'s window is the contiguous
+    segment_length frames in the middle of that span
+    (src/data/segments.py::centered_segment): an OS window of the same size,
+    place and utterances. An utterance too short for the gaps gets no
     windows (an empty list)."""
-    if draw_strategy.startswith(("GO", "GS", "GC")):
+    if draw_strategy.startswith(("GO", "GS", "GC", "OC")):
         if gap_ratio is None:
             raise ValueError(f"{draw_strategy} needs the gap between its blocks")
         block_size = int(draw_strategy[2:])
@@ -515,9 +518,9 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
         strategy = draw_strategy
         if strategy in MIXTURES:
             strategy = MIXTURES[strategy][rng.integers(len(MIXTURES[strategy]))]
-        if strategy.startswith(("GO", "GS", "GC")):
+        if strategy.startswith(("GO", "GS", "GC", "OC")):
             block_size = int(strategy[2:])
-            cut = consecutive_gap_segment if strategy.startswith("GC") else gapped_segment
+            cut = {"GC": consecutive_gap_segment, "OC": centered_segment}.get(strategy[:2], gapped_segment)
             segment = cut(features, segment_length, block_size, round(gap_ratio * block_size), 0.5)
             if strategy.startswith("GS"):
                 segment = shuffle_blocks(segment, block_size, rng)

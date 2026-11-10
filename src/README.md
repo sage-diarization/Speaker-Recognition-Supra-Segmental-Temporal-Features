@@ -275,6 +275,13 @@ all leave exactly the span's gap frames, and everything outside the span,
 unseen. Runs scored with other windows are rescored (the manifest's
 `sst_gapped_windows`).
 
+**OC{b}, OS at equal input.** OS averages every window of the whole
+utterance over the full trial list, so it sees more speech than GO{b},
+GS{b} and GC{b}. OC{b} is the contiguous segment in the middle of their
+span: one window of as many frames, at the same place, scored on the same
+trials (NaN where they are). OC{b}, GC{b}, GO{b} and GS{b} then differ only
+in how the segment's frames are taken from the span.
+
 The price is that an utterance shorter than the span of the blocks and
 gaps, segment + (k − 1) · g ≈ segment · (1 + r) frames, can't be drawn. Its GO{b}/GS{b}
 embedding is NaN, and EER(GO_b) and EER(GS_b) come from only the trials
