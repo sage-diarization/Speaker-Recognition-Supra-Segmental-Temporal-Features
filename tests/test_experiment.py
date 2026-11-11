@@ -1322,3 +1322,109 @@ def test_run_experiment_skips_trial_scores_of_completed_runs_without_their_check
 
     assert not path.exists()
     assert results["SV"][("OS", "OS")].mean == first["SV"][("OS", "OS")].mean
+
+
+class _VideoCorpus:
+    """Two videos of one speaker: a/ with parts of 30, 7 and 11 frames, b/ with one of 9."""
+
+    lengths = {"s/a/1.wav": 30, "s/a/2.wav": 7, "s/a/3.wav": 11, "s/b/1.wav": 9}
+
+    def video_utterance_paths(self, relative_path):
+        return sorted(path for path in self.lengths if path.rsplit("/", 1)[0] == relative_path.rsplit("/", 1)[0])
+
+    def trial_utterance_path(self, relative_path):
+        return relative_path
+
+    def raw_sample_count(self, path):
+        return self.lengths[path]
+
+    @staticmethod
+    def load_waveform(path):
+        return path, 16000
+
+
+def _part_features(load_waveform_fn, path, transformation):
+    # Part k's frames are 1000 * k + frame index, so every frame names its part and place.
+    part = sorted(_VideoCorpus.lengths).index(path)
+    return 1000.0 * part + np.arange(_VideoCorpus.lengths[path], dtype=np.float32)[:, None]
+
+
+def test_extended_trial_utterances_crop_gives_the_whole_extended_utterances_windows(monkeypatch):
+    from src.training.trainer import _eval_windows
+
+    monkeypatch.setattr(experiment_module, "_load_and_featurize", _part_features)
+    monkeypatch.setattr(experiment_module, "expected_frame_count", lambda count, transformation: count)
+    corpus = _VideoCorpus()
+    trials = [(1, "s/a/2.wav", "s/b/1.wav"), (1, "s/a/1.wav", "s/a/3.wav")]
+    for span in range(4, 49):
+        utterances, lengths = experiment_module._lazy_extended_trial_utterances(corpus, trials, None, span)
+        assert lengths == {"s/a/1.wav": 48, "s/a/2.wav": 48, "s/a/3.wav": 48, "s/b/1.wav": 9}
+        for entry, path in utterances:
+            # The utterance itself first, then the rest of its video in file order, each featurized on its own.
+            order = [path, *(p for p in corpus.video_utterance_paths(path) if p != path)]
+            whole = np.concatenate([_part_features(None, p, None) for p in order])
+            crop = entry()
+            assert len(crop) == entry.length
+            for block_size in (1, 2, 3):
+                for gap in range(0, 8):
+                    if experiment_module.gapped_span(4, block_size, gap) > span:
+                        continue
+                    expected = _eval_windows(whole, 4, 2, 1, f"GO{block_size}", None, gap_frames=gap)
+                    assert [w.tolist() for w in _eval_windows(crop, 4, 2, 1, f"GO{block_size}", None, gap_frames=gap)] \
+                        == [w.tolist() for w in expected]
+
+
+def test_gapped_trial_mask_keeps_long_enough_trials_of_different_videos():
+    trials = [(1, "s/a/1.wav", "s/b/1.wav"), (1, "s/a/1.wav", "s/a/2.wav"), (0, "s/a/1.wav", "t/c/1.wav")]
+    lengths = {"s/a/1.wav": 50, "s/a/2.wav": 50, "s/b/1.wav": 50, "t/c/1.wav": 20}
+    mask = experiment_module._gapped_trial_mask
+    assert mask(trials, lengths, 30, exclude_same_video=True).tolist() == [True, False, False]
+    assert mask(trials, lengths, 30, exclude_same_video=False).tolist() == [True, True, False]
+    assert mask(trials, lengths, 0, exclude_same_video=True).tolist() == [True, False, True]
+
+
+def test_run_experiment_scores_gapped_strategies_on_extended_utterances_and_shared_trials(tmp_path):
+    corpus = _make_voxceleb_stub_corpus(tmp_path)
+    # Second 2 s parts for some videos; videos without one stay a single 2 s utterance.
+    root = tmp_path / "voxceleb_stub" / "trial"
+    paths = {}
+    for video in ("idEVAL0/clip0", "idEVAL0/clip2", "idEVAL1/clip0", "idEVAL0/clip1", "idEVAL1/clip1"):
+        for part in ("00001", "00002") if video != "idEVAL0/clip1" and video != "idEVAL1/clip1" else ("00001",):
+            path = root / video / f"{part}.wav"
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(str(path), make_synthetic_waveform(500, 2.0, 16000, seed=len(paths)), 16000)
+            paths[f"{video}/{part}.wav"] = path
+    corpus.trial_utterance_path = paths.__getitem__
+    corpus.video_utterance_paths = lambda relative_path: sorted(
+        path for path in paths if path.rsplit("/", 1)[0] == relative_path.rsplit("/", 1)[0]
+    )
+    corpus.trial_pairs = corpus.dev_trial_pairs = [
+        (1, "idEVAL0/clip0/00001.wav", "idEVAL0/clip0/00002.wav"),  # one video: not scored
+        (1, "idEVAL0/clip0/00001.wav", "idEVAL0/clip2/00001.wav"),  # both extended to 4 s: scored
+        (0, "idEVAL0/clip0/00002.wav", "idEVAL1/clip0/00001.wav"),  # scored
+        (1, "idEVAL0/clip2/00002.wav", "idEVAL0/clip1/00001.wav"),  # 2 s only: too short for GO4's span
+        (0, "idEVAL1/clip1/00001.wav", "idEVAL0/clip2/00001.wav"),  # too short
+    ]
+    config = ExperimentConfig()
+    config.data.dataset = "VoxCeleb"
+    config.training.num_epochs = 1
+    config.training.batch_size = 2
+    config.loss.type = "SOFTMAX"
+    config.num_runs = 1
+    config.training.strategies = ["OS"]
+    config.evaluation.test_strategies = ["OS", "GO4", "GS4", "GC4", "OC4", "GO32", "GS32"]
+    config.evaluation.sst_placebo = True
+    config.evaluation.sst_gap_s = 0.06  # 6 frames: GO4's span of 242 frames needs more than a 2 s utterance
+    config.evaluation.sst_extended_utterances = True
+    config.evaluation.sst_shared_trials = True
+
+    run_experiment(config, corpus=corpus)
+
+    record = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))["completed"][0]
+    assert record["sst_gap_frames"] == 6 and record["sst_extended_utterances"] and record["sst_shared_trials"]
+    with np.load(experiment_module._trial_scores_path(config, "OS", 0)) as scores:
+        assert np.isfinite(scores["OS"]).all()
+        for strategy in ("GO4", "GS4", "GC4", "OC4", "GO32", "GS32", "GS4-placebo", "GS32-placebo"):
+            # GO32's own span would fit the 2 s utterances: the shared trials leave them out anyway.
+            assert np.isfinite(scores[strategy]).tolist() == [False, True, True, False, False], strategy

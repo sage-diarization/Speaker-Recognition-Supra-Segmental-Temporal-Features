@@ -460,7 +460,15 @@ def train(model, loss_module, dataset, config, dev_utterances=None, segment_leng
 GAPPED_WINDOWS = "one, centered"
 
 
-def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap_ratio=None):
+def block_gap(block_size, gap_ratio, gap_frames):
+    """GO{b}/GS{b}/GC{b}/OC{b}'s gap between blocks in frames: gap_frames
+    for every b when given, else round(gap_ratio * b)."""
+    if gap_frames is not None:
+        return gap_frames
+    return round(gap_ratio * block_size)
+
+
+def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap_ratio=None, gap_frames=None):
     """Builds the num_windows hop-window segments for one utterance, matching
     context/src/setup/setup.py's precomputed EVAL distributions -- the ones
     context/src/generator/sampler.py::load_test actually reads at test time
@@ -487,7 +495,8 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     window by one of its strategies, picked at random per window.
 
     GO{b}/GS{b} windows instead take b-frame blocks with fixed gaps of
-    round(gap_ratio * b) frames between them
+    round(gap_ratio * b) frames between them (gap_frames for every b, when
+    given)
     (src/data/segments.py::gapped_segment), in one window in the middle of
     the utterance (GAPPED_WINDOWS), whatever num_windows: several windows at
     shifted positions would see each other's gap frames, so the utterance's
@@ -504,10 +513,10 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     place and utterances. An utterance too short for the gaps gets no
     windows (an empty list)."""
     if draw_strategy.startswith(("GO", "GS", "GC", "OC")):
-        if gap_ratio is None:
+        if gap_ratio is None and gap_frames is None:
             raise ValueError(f"{draw_strategy} needs the gap between its blocks")
         block_size = int(draw_strategy[2:])
-        if features.shape[0] < gapped_span(segment_length, block_size, round(gap_ratio * block_size)):
+        if features.shape[0] < gapped_span(segment_length, block_size, block_gap(block_size, gap_ratio, gap_frames)):
             return []
         num_windows = 1
     if draw_strategy == "SU":
@@ -521,7 +530,7 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
         if strategy.startswith(("GO", "GS", "GC", "OC")):
             block_size = int(strategy[2:])
             cut = {"GC": consecutive_gap_segment, "OC": centered_segment}.get(strategy[:2], gapped_segment)
-            segment = cut(features, segment_length, block_size, round(gap_ratio * block_size), 0.5)
+            segment = cut(features, segment_length, block_size, block_gap(block_size, gap_ratio, gap_frames), 0.5)
             if strategy.startswith("GS"):
                 segment = shuffle_blocks(segment, block_size, rng)
             segments.append(segment)
@@ -574,14 +583,14 @@ EMBEDDING_BATCH_FRAMES = 2048 * 94
 
 
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
-                                   log_every=None, resume_dir=None, gap_ratio=None):
+                                   log_every=None, resume_dir=None, gap_ratio=None, gap_frames=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
     each strategy to the Generator its windows are drawn with -- featurizing
     every utterance only once instead of once per strategy. Returns
     {strategy: (embeddings, labels)}, each equal to a separate
     extract_embeddings call with that strategy and Generator. log_every
-    prints progress every that many utterances. gap_ratio sets the GO{b}/GS{b}
-    strategies' gap between blocks (see _eval_windows); an utterance too
+    prints progress every that many utterances. gap_ratio or gap_frames sets
+    the GO{b}/GS{b} strategies' gap between blocks (see _eval_windows); an utterance too
     short for it gets a NaN embedding under them.
 
     Utterances are featurized EMBEDDING_CHUNK_UTTERANCES at a time, and the
@@ -641,7 +650,7 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                     if counts and sum(counts) + num_windows > batch_windows:
                         embeddings[strategy].extend(embed(windows, counts))
                         windows, counts = pending[strategy] = ([], [])
-                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap_ratio)
+                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap_ratio, gap_frames)
                     if segments:
                         windows.append(np.stack(segments))
                     counts.append(len(segments))

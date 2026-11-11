@@ -335,6 +335,18 @@ def test_eval_windows_gap_scales_with_the_block_size():
         assert set(np.diff(window[:, 0])) == {1, block_size + 1}  # gaps of block_size frames
 
 
+def test_eval_windows_fixed_gap_frames_override_the_ratio():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(400, dtype=np.float32)[:, None]
+    for block_size in (2, 4, 16):
+        window = _eval_windows(features, 48, 24, 1, f"GO{block_size}", np.random.default_rng(0), gap_ratio=1.0,
+                               gap_frames=5)[0]
+        assert set(np.diff(window[:, 0])) == {1, 6}  # gaps of 5 frames, whatever the block size
+    # Too short for 48 frames in blocks of 2 with 23 gaps of 5 (163 frames).
+    assert _eval_windows(features[:162], 48, 24, 1, "GO2", np.random.default_rng(0), gap_frames=5) == []
+
+
 def test_eval_windows_gc_cuts_the_gos_gap_frames_in_one_piece():
     from src.training.trainer import _eval_windows
 

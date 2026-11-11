@@ -37,21 +37,25 @@ training:
 
 evaluation:
   # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: blocks with gaps of
-  # evaluation.sst_gap_ratio * b frames in original/shuffled order, for L(b)
+  # evaluation.sst_gap_s in original/shuffled order, for L(b)
   # (see src/experiment.py's sst_bracket). GC{b}/OC{b}: the same span's frames
   # in one cut / its contiguous middle, for comparing against OS at equal
   # input. One frame per 20 ms: blocks of
   # 2/4/8/16/32 frames span 55/95/175/335/655 ms of signal.
-  test_strategies: [OS, SS, BS2, BS4, BS8, BS16, BS32, GO4, GS4, GC4, OC4, GO8, GS8, GC8, OC8, GO16, GS16, GC16, OC16, GO32, GS32, GC32, OC32]
+  test_strategies: [OS, SS, BS2, BS4, BS8, BS16, BS32, GO2, GS2, GC2, OC2, GO4, GS4, GC4, OC4, GO8, GS8, GC8, OC8, GO16, GS16, GC16, OC16, GO32, GS32, GC32, OC32]
   # Quality checks of the bracket (see src/README.md's "SST bracket"): paired
   # trial-bootstrap intervals, and every GS{b} scored with a second seed.
   sst_bootstrap_resamples: 200
   sst_placebo: true
-  # Gap of 1.25 * b frames: a GO{b} join then splices frames >= d* = 210 ms
-  # apart (R(d) = 0.95, logs/161641-decorrelation-pretrained-resnet34-voxceleb-2s.npz,
-  # src/measure_decorrelation.py) from b = 8 (175 ms blocks) up; the smallest b's joins stay
-  # smoother than GS's, so its L(b) also counts join roughness.
-  sst_gap_ratio: 1.25
+  # Fixed gap of 440 ms (22 frames) for every b: the smallest swept gap at which GO{b}'s joins
+  # are as rough as GS{b}'s for every b (median, quartiles and share of rougher
+  # joins), on the extended utterances (doc/join-roughness-gap-sweep.ipynb).
+  sst_gap_s: 0.44
+  # GO/GS/GC/OC on the utterance followed by the rest of its video, as the
+  # sweep validated (same-video trials left out), and all on the trials long
+  # enough for the smallest b's span (23.1 s), so they compare across b.
+  sst_extended_utterances: true
+  sst_shared_trials: true
 
 wandb:
   run_postfix: 2s

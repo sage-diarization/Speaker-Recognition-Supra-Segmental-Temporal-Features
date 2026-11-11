@@ -62,6 +62,9 @@ class VoxCelebCorpus:
         self._wav_root = root / "wav"
         vox1_counts = _wav_index(self._wav_root, root / _INDEX_FILE, "VoxCeleb1")
         self._sample_counts = {str(self._wav_root / path): count for path, count in vox1_counts.items()}
+        self._video_utterances = {}
+        for path in sorted(vox1_counts):
+            self._video_utterances.setdefault(os.path.dirname(path), []).append(path)
         vox2_root = os.environ.get("VOXCELEB2_ROOT") or voxceleb.vox2_root
         if vox2_root:
             vox2_root = Path(vox2_root).expanduser()
@@ -109,6 +112,11 @@ class VoxCelebCorpus:
 
     def trial_utterance_path(self, relative_path):
         return self._wav_root / relative_path
+
+    def video_utterance_paths(self, relative_path):
+        """Every VoxCeleb1 utterance of relative_path's video
+        (<speaker>/<video>/), itself included, as relative paths in file order."""
+        return self._video_utterances[os.path.dirname(relative_path)]
 
     def raw_sample_count(self, path):
         # From the cached index (see _wav_index), not a header read per file.

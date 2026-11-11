@@ -26,7 +26,7 @@ from .data.dataset import (
 )
 from .data.features import vtlp_warp
 from .data.lazy_features import LazyFeatures, expected_frame_count
-from .data.segments import BLOCK_SIZES, DRAW_STRATEGIES
+from .data.segments import BLOCK_SIZES, DRAW_STRATEGIES, gapped_span
 from .data.tidyvoicex import TidyVoiceXCorpus
 from .data.timit import TimitCorpus
 from .data.voxceleb import VoxCelebCorpus
@@ -44,7 +44,7 @@ from .evaluation.verification import (
 )
 from .models.losses import build_loss
 from .models.registry import build_model
-from .training.trainer import GAPPED_WINDOWS, best_checkpoint_path, extract_embeddings_by_strategy, train
+from .training.trainer import GAPPED_WINDOWS, best_checkpoint_path, block_gap, extract_embeddings_by_strategy, train
 
 STRATEGIES = ("OS", "SS", "SU")
 
@@ -227,6 +227,61 @@ def _lazy_trial_utterances(corpus, trial_pairs, transformation):
         compute_fn = functools.partial(_load_and_featurize, corpus.load_waveform, full_path, transformation)
         utterances.append((LazyFeatures(compute_fn, length), relative_path))
     return utterances
+
+
+def _extended_frames(corpus, parts, transformation, start, stop):
+    """Frames [start, stop) of the parts' features one after another, each
+    part featurized on its own (with its own normalization); only the parts
+    overlapping [start, stop) are read."""
+    frames, offset = [], 0
+    for path in parts:
+        length = expected_frame_count(corpus.raw_sample_count(path), transformation)
+        if offset < stop and offset + length > start:
+            features = _load_and_featurize(corpus.load_waveform, path, transformation)
+            assert len(features) == length, (path, len(features), length)
+            frames.append(features[max(start - offset, 0):stop - offset])
+        offset += length
+    return np.concatenate(frames)
+
+
+def _lazy_extended_trial_utterances(corpus, trial_pairs, transformation, span):
+    """As _lazy_trial_utterances, but each utterance followed by the other
+    utterances of its video in file order (the extended utterance), for the
+    GO{b}/GS{b}/GC{b}/OC{b} windows (evaluation.sst_extended_utterances),
+    as doc/join-roughness-gap-sweep.ipynb validated it. Also returns
+    {relative path: the extended utterance's length in frames}.
+
+    Those windows lie within the largest span, `span` frames, centered in
+    the extended utterance (trainer.GAPPED_WINDOWS), so only a crop of it is
+    featurized: for a length L >= span, the middle L' = span + (L - span) % 4
+    frames. L - L' is then a multiple of 4, so the crop starts an even number
+    of frames c = (L - L') / 2 in, and every window's start (round(0.5 * (L -
+    s)), half to even) lands exactly c frames later than in the crop: the
+    same frames as featurizing the whole extended utterance would give."""
+    relative_paths = sorted({path for _, path1, path2 in trial_pairs for path in (path1, path2)})
+    utterances, lengths = [], {}
+    for relative_path in relative_paths:
+        others = [path for path in corpus.video_utterance_paths(relative_path) if path != relative_path]
+        parts = [corpus.trial_utterance_path(path) for path in (relative_path, *others)]
+        length = sum(expected_frame_count(corpus.raw_sample_count(path), transformation) for path in parts)
+        crop = length if length < span else span + (length - span) % 4
+        start = (length - crop) // 2
+        compute_fn = functools.partial(_extended_frames, corpus, parts, transformation, start, start + crop)
+        utterances.append((LazyFeatures(compute_fn, crop), relative_path))
+        lengths[relative_path] = length
+    return utterances, lengths
+
+
+def _gapped_trial_mask(trial_pairs, lengths, span, exclude_same_video):
+    """Which trials the GO{b}/GS{b}/GC{b}/OC{b} strategies score: both
+    utterances at least span frames long (lengths: {relative path: frames}),
+    and, with exclude_same_video, not both from one video (their extended
+    utterances would share audio)."""
+    return np.array([
+        lengths[path1] >= span and lengths[path2] >= span
+        and not (exclude_same_video and os.path.dirname(path1) == os.path.dirname(path2))
+        for _, path1, path2 in trial_pairs
+    ])
 
 
 def _lazy_indexed_trial_utterances(corpus, transformation, segment_length):
@@ -538,6 +593,10 @@ def run_experiment(config, corpus=None, strategies=None):
         raise ValueError("GO{b}/GS{b} are test strategies only, they can't be trained on")
     gap_ratio = config.evaluation.sst_gap_ratio
     gapped_strategies = [s for s in test_strategies if _gapped(s)]
+    extended = config.evaluation.sst_extended_utterances
+    shared_trials = config.evaluation.sst_shared_trials
+    if (extended or shared_trials) and config.data.dataset.lower() != "voxceleb":
+        raise ValueError("evaluation.sst_extended_utterances and sst_shared_trials are VoxCeleb only")
     config.device = resolve_device(config.device)
     print(f"==> Using device: {config.device}")
     if config.training.num_epochs == 0:
@@ -550,6 +609,17 @@ def run_experiment(config, corpus=None, strategies=None):
     dataset_name = config.data.dataset.lower()
     transformation = config.transformation
     segment_length = config.data.segment_length(transformation)
+    gap_frames = None
+    if config.evaluation.sst_gap_s is not None:
+        gap_frames = round(config.evaluation.sst_gap_s / transformation.frame_period_s)
+    # The largest span of GO{b}/GS{b}/GC{b}/OC{b} windows (the smallest b's).
+    gapped_max_span = max(
+        (gapped_span(segment_length, int(s[2:]), block_gap(int(s[2:]), gap_ratio, gap_frames)) for s in gapped_strategies),
+        default=0,
+    )
+    # The GO{b}/GS{b}/GC{b}/OC{b} windows' utterances, and per trial whether
+    # those score it (None: wherever their utterances are long enough).
+    gapped_utterances, gapped_trials = None, None
 
     if dataset_name == "voxceleb":
         # Neururer et al. 2024 explicitly omits the SC task for VoxCeleb
@@ -579,6 +649,22 @@ def run_experiment(config, corpus=None, strategies=None):
             f"==> VoxCeleb: {len(train_utterances)} training utterances of {len(train_label_map)} speakers, "
             f"{len(dev_utterances)} selection / {len(sv_eval_utterances)} evaluation trial utterances"
         )
+        if gapped_strategies and extended:
+            gapped_utterances, gapped_lengths = _lazy_extended_trial_utterances(
+                corpus, corpus.trial_pairs, transformation, gapped_max_span
+            )
+        else:
+            gapped_lengths = {path: entry.length for entry, path in sv_eval_utterances}
+        if gapped_strategies and (extended or shared_trials):
+            gapped_trials = _gapped_trial_mask(
+                corpus.trial_pairs, gapped_lengths, gapped_max_span if shared_trials else 0, extended
+            )
+            print(
+                f"==> GO/GS/GC/OC: {int(gapped_trials.sum())}/{len(gapped_trials)} trials"
+                + (f" long enough for their largest span, {gapped_max_span} frames" if shared_trials else "")
+                + (", without same-video trials, on extended utterances" if extended else ""),
+                flush=True,
+            )
         sc_utterances = None
 
         def sv_scores_fn(embeddings, utterance_ids):
@@ -635,6 +721,9 @@ def run_experiment(config, corpus=None, strategies=None):
         # this same function -- no need to route dev-eval through this
         # module's reference for TIMIT.
         dev_eval_fn = None
+
+    if gapped_utterances is None:
+        gapped_utterances = sv_eval_utterances
 
     results = {"SV": {}, "SV_minDCF": {}, "SV_paper_comparable": {}}
     if sc_utterances is not None:
@@ -715,6 +804,12 @@ def run_experiment(config, corpus=None, strategies=None):
                 raw_sst_placebo.append(record["sst_placebo"])
             raw_run_indices.append(run_idx)
 
+        # How GO{b}/GS{b}/GC{b}/OC{b} were scored: rescored when any differs.
+        gapped_settings = {
+            "sst_gap_ratio": gap_ratio, "sst_gap_frames": gap_frames, "sst_gapped_windows": GAPPED_WINDOWS,
+            "sst_extended_utterances": extended, "sst_shared_trials": shared_trials,
+        }
+
         def embedding_resume_dir(run_idx, name, strategies_to_test):
             """Where a pretrained model's evaluation keeps its finished
             chunks of embeddings (see extract_embeddings_by_strategy), so a
@@ -722,7 +817,11 @@ def run_experiment(config, corpus=None, strategies=None):
             Named by the strategies, so another set never reuses them."""
             if config.training.num_epochs > 0:
                 return None
-            key = hashlib.sha1(f"{','.join(strategies_to_test)};gap_ratio={gap_ratio};gapped_windows={GAPPED_WINDOWS}".encode()).hexdigest()[:10]
+            key = f"{','.join(strategies_to_test)};gap_ratio={gap_ratio};gapped_windows={GAPPED_WINDOWS}"
+            if gap_frames is not None or extended:
+                # Only the settings that change embeddings; older keys stay valid.
+                key += f";gap_frames={gap_frames};extended={extended}"
+            key = hashlib.sha1(key.encode()).hexdigest()[:10]
             return _embedding_cache_dir(config, train_strategy, run_idx) / f"{name}-{key}"
 
         def evaluate(model, run_idx, record, strategies_to_test):
@@ -744,36 +843,49 @@ def run_experiment(config, corpus=None, strategies=None):
             "{sweep key}-run{run_idx}-trials", e.g. for DET curves.
 
             GO{b}/GS{b} are scored only on the trials whose utterances are
-            long enough for their fixed gaps (see _scored_trials); the
-            number of those trials is logged as SV_trials_test-{strategy}."""
+            long enough for their fixed gaps (see _scored_trials), and only
+            on gapped_trials, when set (evaluation.sst_shared_trials,
+            sst_extended_utterances); the number of those trials is logged
+            as SV_trials_test-{strategy}."""
             summary = {}
             started = time.perf_counter()
             print(f"==> Final evaluation: embedding {len(sv_eval_utterances)} utterances", flush=True)
-            sv_by_strategy = extract_embeddings_by_strategy(
-                model, sv_eval_utterances, segment_length,
-                {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
-                device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                resume_dir=embedding_resume_dir(run_idx, "test", strategies_to_test), gap_ratio=gap_ratio,
-            )
+            # One pass per utterance set: GO/GS/GC/OC's own when extended.
+            if gapped_utterances is sv_eval_utterances:
+                passes = [(sv_eval_utterances, list(strategies_to_test))]
+            else:
+                passes = [(sv_eval_utterances, [s for s in strategies_to_test if not _gapped(s)]),
+                          (gapped_utterances, [s for s in strategies_to_test if _gapped(s)])]
+            sv_by_strategy = {}
+            for utterances, group in passes:
+                if not group:
+                    continue
+                sv_by_strategy.update(extract_embeddings_by_strategy(
+                    model, utterances, segment_length,
+                    {test_strategy: np.random.default_rng(run_idx) for test_strategy in group},
+                    device=config.device, num_workers=config.training.num_workers, log_every=10_000,
+                    resume_dir=embedding_resume_dir(run_idx, "test", group), gap_ratio=gap_ratio, gap_frames=gap_frames,
+                ))
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
                 sc_by_strategy = extract_embeddings_by_strategy(
                     model, sc_utterances, segment_length,
                     {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
-                    device=config.device, num_workers=config.training.num_workers, gap_ratio=gap_ratio,
+                    device=config.device, num_workers=config.training.num_workers, gap_ratio=gap_ratio, gap_frames=gap_frames,
                 )
             if any(_gapped(test_strategy) for test_strategy in strategies_to_test):
-                record["sst_gap_ratio"] = gap_ratio
-                record["sst_gapped_windows"] = GAPPED_WINDOWS
+                record.update(gapped_settings)
             # Every trial's label and its score under each strategy, NaN where a
             # gapped strategy couldn't score it.
             trial_labels, trial_scores = None, {}
             for test_strategy in strategies_to_test:
                 trial_labels, trial_scores[test_strategy] = sv_scores_fn(*sv_by_strategy[test_strategy])
+                if _gapped(test_strategy) and gapped_trials is not None:
+                    trial_scores[test_strategy] = np.where(gapped_trials, trial_scores[test_strategy], np.nan)
                 labels, scores = trial_labels, trial_scores[test_strategy]
                 if _gapped(test_strategy):
                     labels, scores = _scored_trials(labels, scores)
-                    print(f"==> {test_strategy}: scored {len(labels)} trials long enough for its gaps", flush=True)
+                    print(f"==> {test_strategy}: scored {len(labels)} trials", flush=True)
                     summary[f"run{run_idx}/final/SV_trials_test-{test_strategy}"] = len(labels)
                 eer, dcf = eer_from_scores(labels, scores), min_dcf(labels, scores)
                 record["sv"][test_strategy] = eer
@@ -808,13 +920,18 @@ def run_experiment(config, corpus=None, strategies=None):
                 gs_strategies = [test_strategy for test_strategy in test_strategies if test_strategy.startswith("GS")]
                 # The same windows and blocks as the first GS scoring, in another random order.
                 placebo_by_strategy = extract_embeddings_by_strategy(
-                    model, sv_eval_utterances, segment_length,
+                    model, gapped_utterances, segment_length,
                     {test_strategy: np.random.default_rng((run_idx, 1)) for test_strategy in gs_strategies},
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
                     resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), gap_ratio=gap_ratio,
+                    gap_frames=gap_frames,
                 ) if gs_strategies else {}
                 for test_strategy in gs_strategies:
                     _, trial_scores[f"{test_strategy}-placebo"] = sv_scores_fn(*placebo_by_strategy[test_strategy])
+                    if gapped_trials is not None:
+                        trial_scores[f"{test_strategy}-placebo"] = np.where(
+                            gapped_trials, trial_scores[f"{test_strategy}-placebo"], np.nan
+                        )
                 record["sst_placebo"] = {
                     f"b{test_strategy[2:]}": eer_from_scores(*_scored_trials(trial_labels, trial_scores[f"{test_strategy}-placebo"]))
                     - record["sv"][test_strategy]
@@ -826,7 +943,7 @@ def run_experiment(config, corpus=None, strategies=None):
             _save_trial_scores(trial_scores_path, trial_labels, trial_scores)
             tracking.log_artifact(
                 run, f"{_sweep_key(config, train_strategy)}-run{run_idx}-trials", "trial-scores", trial_scores_path,
-                metadata={"run_idx": run_idx, "strategies": list(trial_scores), "sst_gap_ratio": gap_ratio, "sst_gapped_windows": GAPPED_WINDOWS},
+                metadata={"run_idx": run_idx, "strategies": list(trial_scores), **gapped_settings},
             )
             return summary
 
@@ -841,8 +958,13 @@ def run_experiment(config, corpus=None, strategies=None):
         for run_idx, completed_record in manifest["completed"].items():
             if run_idx in continued:
                 continue
-            if gapped_strategies and (completed_record.get("sst_gap_ratio") != gap_ratio
-                                      or completed_record.get("sst_gapped_windows") != GAPPED_WINDOWS):
+            # Records predating a setting were scored with its default.
+            recorded = {
+                key: completed_record.get(key, {"sst_gap_frames": None, "sst_extended_utterances": False,
+                                                "sst_shared_trials": False}.get(key))
+                for key in gapped_settings
+            }
+            if gapped_strategies and recorded != gapped_settings:
                 # GO/GS scored with another gap ratio, a gap fixed in seconds
                 # (sst_gap_frames), with the blocks spread over the whole
                 # utterance (before fixed gaps), or in other windows than

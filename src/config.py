@@ -389,6 +389,20 @@ class EvaluationConfig:
     # segment * (1 + ratio) frames. Their EERs come from only the trials
     # whose utterances are long enough for that span.
     sst_gap_ratio: float = 1.0
+    # A fixed gap of round(sst_gap_s / transformation.frame_period_s) frames
+    # for every b instead, when set (overrides sst_gap_ratio): e.g. the gap at
+    # which GO's joins are as rough as GS's (doc/join-roughness-gap-sweep.ipynb).
+    sst_gap_s: float | None = None
+    # VoxCeleb only: GO{b}/GS{b}/GC{b}/OC{b} windows come from the trial
+    # utterance followed by the other utterances of its video in file order,
+    # each featurized on its own (see src/experiment.py's
+    # _lazy_extended_trial_utterances), and trials of two utterances from the
+    # same video aren't scored under them. OS/SS/BS{b} keep the utterance alone.
+    sst_extended_utterances: bool = False
+    # VoxCeleb only: score every GO{b}/GS{b}/GC{b}/OC{b} on the same trials, the
+    # ones whose utterances are long enough for the largest span among them
+    # (the smallest b's), so their EERs compare across b.
+    sst_shared_trials: bool = False
 
 
 @dataclass
