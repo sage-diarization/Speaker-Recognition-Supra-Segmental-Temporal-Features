@@ -13,7 +13,9 @@ from torch.utils.data import DataLoader
 
 from .. import tracking
 from ..data.lazy_features import resolve_features
-from ..data.segments import MIXTURES, centered_segment, consecutive_gap_segment, gapped_segment, gapped_span, shuffle_blocks
+from ..data.segments import (
+    MIXTURES, centered_segment, consecutive_gap_segment, gapped_segment, gapped_span, reverse_frames, shuffle_blocks,
+)
 from ..evaluation.verification import equal_error_rate
 
 
@@ -490,7 +492,8 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     longer (2-8 concatenated sentences).
 
     BS{b} walks the same sequential windows as OS/SS and permutes each
-    window's b-frame blocks fresh (see src/data/segments.py::draw_bs); a
+    window's b-frame blocks fresh (see src/data/segments.py::draw_bs), RV{k}
+    reverses each one's time (src/data/segments.py::reverse_frames); a
     mixture (MIX, RANDBS, see src/data/segments.py's MIXTURES) treats each
     window by one of its strategies, picked at random per window.
 
@@ -541,6 +544,8 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
             rng.shuffle(segment)
         elif strategy.startswith("BS"):
             segment = shuffle_blocks(segment, int(strategy[2:]), rng)
+        elif strategy.startswith("RV"):
+            segment = reverse_frames(segment, int(strategy[2:]))
         segments.append(segment)
     return segments
 

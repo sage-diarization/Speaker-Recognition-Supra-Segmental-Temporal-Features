@@ -479,3 +479,13 @@ def test_utterance_join_roughness_measures_the_joins_of_the_embedded_windows():
     # Another seed draws other block orders, with other joins.
     other, _ = utterance_join_roughness(utterances, 40, ["GS8"], seed=4, gap_ratio=1.25)
     assert not np.allclose(other["GS8"][[0, 2]], roughness["GS8"][[0, 2]])
+
+
+def test_eval_windows_reversal_reverses_each_os_window():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(100 * 4, dtype=np.float32).reshape(100, 4)
+    original = _eval_windows(features, 40, 20, 4, "OS", np.random.default_rng(0))
+    reversed_ = _eval_windows(features, 40, 20, 4, "RV1", np.random.default_rng(0))
+    for window, reversed_window in zip(original, reversed_):
+        np.testing.assert_array_equal(reversed_window, window[::-1])

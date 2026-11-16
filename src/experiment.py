@@ -431,7 +431,8 @@ def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
     to their per-trial scores over the same trials (labels), and every
     resample is shared by all strategies, so the EER differences are paired:
     noise common to both conditions of a difference cancels. Returns
-    {f"{measure}_b{b}": (low, high)}.
+    {f"{measure}_b{b}": (low, high)}, and {f"R_{RV{k}}": (low, high)} for the
+    reversal cost EER(RV{k}) - EER(OS) of each time-reversed strategy.
 
     Only the trial sampling is resampled: the trained model and the random
     block orders stay fixed (see the placebo and the SD over runs for
@@ -449,6 +450,9 @@ def sst_bootstrap_intervals(labels, scores, num_resamples, rng, level=0.95):
         for block_size in BLOCK_SIZES:
             for measure, value in sst_bracket(eers, block_size).items():
                 samples.setdefault(f"{measure}_b{block_size}", []).append(value)
+        for strategy in eers:
+            if strategy.startswith("RV") and "OS" in eers:
+                samples.setdefault(f"R_{strategy}", []).append(eers[strategy] - eers["OS"])
     tail = (1 - level) / 2
     return {key: (float(np.quantile(values, tail)), float(np.quantile(values, 1 - tail))) for key, values in samples.items()}
 
@@ -589,6 +593,11 @@ def run_experiment(config, corpus=None, strategies=None):
     unknown = [s for s in (*strategies, *test_strategies) if s not in DRAW_STRATEGIES]
     if unknown:
         raise ValueError(f"unknown draw strategies {unknown}, expected some of {list(DRAW_STRATEGIES)}")
+    # A w2vbert frame stacks 2 fbank frames (see TransformationConfig.type).
+    reversal = f"RV{2 if config.transformation.type == 'w2vbert' else 1}"
+    mismatched = [s for s in (*strategies, *test_strategies) if s.startswith("RV") and s != reversal]
+    if mismatched:
+        raise ValueError(f"{mismatched} don't reverse {config.transformation.type!r} frames exactly, use {reversal}")
     if any(_gapped(s) for s in strategies):
         raise ValueError("GO{b}/GS{b} are test strategies only, they can't be trained on")
     gap_ratio = config.evaluation.sst_gap_ratio
@@ -908,7 +917,7 @@ def run_experiment(config, corpus=None, strategies=None):
             if config.evaluation.sst_bootstrap_resamples:
                 scores = {
                     test_strategy: trial_scores[test_strategy] for test_strategy in test_strategies
-                    if test_strategy == "OS" or test_strategy[:2] in ("BS", "GO", "GS")
+                    if test_strategy == "OS" or test_strategy[:2] in ("BS", "GO", "GS", "RV")
                 }
                 record["sst_ci"] = sst_bootstrap_intervals(
                     trial_labels, scores, config.evaluation.sst_bootstrap_resamples, np.random.default_rng(run_idx)

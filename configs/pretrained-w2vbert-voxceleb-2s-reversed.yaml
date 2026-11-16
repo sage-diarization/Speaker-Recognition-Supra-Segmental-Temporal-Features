@@ -1,0 +1,56 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 1                # OS and the reversal are deterministic: only SS would vary between runs
+
+# The SST bracket study (see src/README.md) of an externally pretrained
+# speaker-verification model, only evaluated (training.num_epochs 0), see
+# src/models/pretrained_*.py.
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 2.0    # test windows (the CNN/Conformer SST runs use 2 s)
+
+voxceleb:
+  root: "~/.cache/datasets/voxceleb1"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
+
+# The model's first frame grid, what the test draws shuffle (see TransformationConfig.type).
+transformation:
+  type: "w2vbert"
+  frame_length_s: 0.025
+  frame_step_s: 0.01
+
+model:
+  type: "W2VBertSV"
+
+w2vbert:
+  pretrained: "facebook/w2v-bert-2.0"   # architecture only; the weights all come from the checkpoint
+
+pretrained:
+  checkpoint: "zl389/w2v-bert-2.0_SV:Adapter_MFA_voxceleb2/s3/adapter_mfa_vox2_s3_0.18.pth"   # VoxCeleb2, large-margin fine-tuned
+
+training:
+  num_epochs: 0            # pretrained: evaluation only
+  strategies: [OS]         # only names the sweep: nothing is trained
+  # Test utterances are featurized in worker processes -- match the SLURM
+  # jobs' --cpus-per-task.
+  num_workers: 32
+
+evaluation:
+  # Time reversal: every OS window with its frames in reverse order
+  # (RV2, which also reverses the 2 fbank frames stacked in each 20 ms w2v-BERT frame,
+  # see src/data/segments.py's reverse_frames). It keeps every frame and every
+  # pair of neighbours, so it adds no joins: EER(RV2) - EER(OS) is the cost of
+  # flipping the direction of time alone. SS (every frame shuffled) is the
+  # reference for destroying all temporal order.
+  test_strategies: [OS, SS, RV2]
+  # Paired trial-bootstrap 95% interval of EER(RV2) - EER(OS), logged as
+  # SST_R_RV2_ci_low/high (see src/experiment.py's sst_bootstrap_intervals).
+  sst_bootstrap_resamples: 200
+
+wandb:
+  run_postfix: 2s-reversed
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: [pretrained]

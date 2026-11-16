@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --time=240
+#SBATCH --job-name=sst/measure-interaction-resnet34-voxceleb-hard
+#SBATCH --ntasks=1
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
+#SBATCH --account=cai_cv
+#SBATCH --partition=gpu_top
+#SBATCH --exclude=irvine
+#SBATCH --output=logs/%j_%N.out
+#SBATCH --error=logs/%j_%N.out
+
+# Measures R(d), how much the pretrained model combines two input patches
+# d apart, on 2 s windows of VoxCeleb1-H trial utterances (see
+# src/measure_interaction.py).
+source slurm/install.submit
+source slurm/stage-voxceleb.submit
+
+CONFIG=configs/pretrained-resnet34-voxceleb-2s.yaml
+python3 -u -m src.measure_interaction \
+	--config "$CONFIG" \
+	--output "logs/${SLURM_JOB_ID}-interaction-$(basename "$CONFIG" .yaml).npz"
+
+echo "Done."

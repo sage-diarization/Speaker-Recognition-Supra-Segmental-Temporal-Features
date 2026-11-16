@@ -206,3 +206,25 @@ def test_centered_segment_raises_when_utterance_too_short_for_the_gaps(utterance
 
 def test_draw_strategies_register_centered_crops():
     assert {"OC8", "OC64"} <= set(DRAW_STRATEGIES)
+
+
+def test_reverse_frames_reverses_the_frame_order():
+    from src.data.segments import reverse_frames
+
+    segment = np.arange(12, dtype=np.float32).reshape(6, 2)
+    np.testing.assert_array_equal(reverse_frames(segment), segment[::-1])
+
+
+def test_reverse_frames_reverses_stacked_feature_frames_exactly():
+    from src.data.segments import reverse_frames
+
+    # 8 feature frames of 3 bins, stacked two per model frame as w2v-BERT's.
+    fbank = np.arange(24, dtype=np.float32).reshape(8, 3)
+    stacked = fbank.reshape(4, 6)
+    np.testing.assert_array_equal(reverse_frames(stacked, stack=2), fbank[::-1].reshape(4, 6))
+
+
+def test_rv_is_the_reversed_os_crop(utterance):
+    rv = DRAW_STRATEGIES["RV1"](utterance, 40, np.random.default_rng(0))
+    os_ = draw_os(utterance, 40, np.random.default_rng(0))
+    np.testing.assert_array_equal(rv, os_[::-1])

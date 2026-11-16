@@ -1101,6 +1101,36 @@ def test_sst_bootstrap_intervals_are_paired_and_contain_the_point_estimate():
     assert low > 0
 
 
+def test_sst_bootstrap_intervals_include_the_reversal_cost():
+    rng = np.random.default_rng(0)
+    labels = np.repeat([1, 0], 200)
+    os_scores = rng.normal(labels * 1.5, 1.0)
+    scores = {"OS": os_scores, "RV1": os_scores - 0.6 * labels}
+    intervals = experiment_module.sst_bootstrap_intervals(labels, scores, 100, np.random.default_rng(1))
+
+    eers = {strategy: experiment_module.eer_from_scores(labels, values) for strategy, values in scores.items()}
+    low, high = intervals["R_RV1"]
+    assert low <= eers["RV1"] - eers["OS"] <= high
+    assert low > 0
+
+
+def test_run_experiment_scores_the_reversal_with_its_bootstrap_interval():
+    config = _continuation_config(1, keep_checkpoints=False)
+    config.evaluation.test_strategies = ["OS", "RV1"]
+    config.evaluation.sst_bootstrap_resamples = 10
+    results = run_experiment(config, corpus=_tiny_stub_corpus())
+    assert ("OS", "RV1") in results["SV"]
+    record = experiment_module._load_manifest(experiment_module._manifest_path(config, "OS"))["completed"][0]
+    assert "R_RV1" in record["sst_ci"]
+
+
+def test_run_experiment_rejects_a_reversal_that_does_not_match_the_frames():
+    config = _continuation_config(1)
+    config.evaluation.test_strategies = ["OS", "RV2"]
+    with pytest.raises(ValueError, match="RV1"):
+        run_experiment(config, corpus=_tiny_stub_corpus())
+
+
 def test_sst_bootstrap_intervals_score_go_and_gs_only_on_their_trials_with_scores():
     rng = np.random.default_rng(0)
     labels = np.repeat([1, 0], 200)

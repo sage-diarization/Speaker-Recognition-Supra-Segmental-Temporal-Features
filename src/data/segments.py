@@ -63,6 +63,23 @@ def draw_bs(data, segment_length, rng=None, block_size=1):
     return shuffle_blocks(draw_os(data, segment_length, rng), block_size, rng)
 
 
+def reverse_frames(segment, stack=1):
+    """segment with time reversed: its frames in reverse order, and, when
+    each frame stacks `stack` consecutive feature frames side by side (2
+    for w2v-BERT's 160-dim frames of two 80-bin fbank frames), those in
+    reverse order too, so the underlying fbank frames are reversed exactly.
+    Every frame and every pair of neighbours stays, so it adds no joins."""
+    frames = segment[::-1]
+    if stack > 1:
+        frames = frames.reshape(frames.shape[0], stack, -1)[:, ::-1].reshape(frames.shape[0], -1)
+    return frames.copy()
+
+
+def draw_rv(data, segment_length, rng=None, stack=1):
+    """Reversed segment: an OS crop with time reversed (see reverse_frames)."""
+    return reverse_frames(draw_os(data, segment_length, rng), stack)
+
+
 def gapped_span(segment_length, block_size, gap):
     """Frames of the utterance that gapped_segment's blocks and gaps span."""
     return segment_length + (-(-segment_length // block_size) - 1) * gap
@@ -161,6 +178,9 @@ def draw_mixture(data, segment_length, rng=None, choices=()):
 # by default), so a block covers (b - 1) * 10 + 64 ms of signal.
 BLOCK_SIZES = (2, 4, 8, 16, 32, 64)
 
+# Feature frames per model frame of the RV{k} strategies (see reverse_frames).
+REVERSAL_STACKS = (1, 2)
+
 # The strategies each mixture picks from per segment (see draw_mixture).
 MIXTURES = {
     "MIX": ("OS", "SS"),
@@ -172,6 +192,9 @@ DRAW_STRATEGIES = {
     "SS": draw_ss,
     "SU": draw_su,
     **{f"BS{b}": functools.partial(draw_bs, block_size=b) for b in BLOCK_SIZES},
+    # RV{k}: time-reversed OS, for frames that stack k feature frames
+    # (RV1 for most front-ends, RV2 for w2v-BERT's, see reverse_frames).
+    **{f"RV{k}": functools.partial(draw_rv, stack=k) for k in REVERSAL_STACKS},
     # Test strategies only: their gap (round(evaluation.sst_gap_ratio * b)
     # frames) is passed by the evaluation (see trainer._eval_windows).
     **{f"GO{b}": functools.partial(draw_go, block_size=b) for b in BLOCK_SIZES},
