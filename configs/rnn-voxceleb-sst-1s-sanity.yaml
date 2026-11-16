@@ -1,0 +1,65 @@
+device: "auto"            # "auto" picks cuda > mps > cpu; set explicitly (e.g. "cpu") to override
+num_runs: 5                # independent train/test runs per strategy to average EER mean+SD over (Neururer et al. 2024 Section 2.3)
+
+# The SST bracket (see src/README.md) on the paper's own training setup
+# (configs/rnn-voxceleb.yaml: 1 s segments, per-frame z-score, 128 epochs,
+# paper checkpoint epochs, 5 runs) -- a sanity check of GO/GS against
+# Neururer et al. 2024's conclusion. Only evaluation differs.
+
+data:
+  dataset: "VoxCeleb"      # see src/README.md's "Running on VoxCeleb" section for the protocol this implies
+  segment_duration: 1.0
+
+# Neururer et al. 2024's protocol (Section 3.2, context/src's
+# 04_evaluation/VOX-00_ORIGINAL.json): train on VoxCeleb2 dev, select
+# checkpoints on VoxCeleb1-O (cleaned), report SV on VoxCeleb1-H (cleaned).
+# Remove vox2_root and eval_trial_meta_url for the VoxCeleb1-only substitute
+# (see src/README.md's "Running on VoxCeleb").
+voxceleb:
+  root: "~/.cache/datasets/voxceleb1"   # VoxCeleb1, fetched via torchaudio's VoxCeleb1Verification downloader on first use
+  vox2_root: "~/.cache/datasets/voxceleb2"   # VoxCeleb2 dev as 16 kHz WAV, downloaded + converted manually
+  trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/veri_test2.txt"          # checkpoint selection
+  eval_trial_meta_url: "https://www.robots.ox.ac.uk/~vgg/data/voxceleb/meta/list_test_hard2.txt"  # reported SV
+
+model:
+  type: "RNN"
+
+# transformation defaults (mel, hann window) already match context/src's
+# DeepVoice front-end, which the RNN (like the CNN) uses -- no overrides needed.
+
+rnn:
+  hidden_size: 512          # per-direction BiLSTM hidden size (context/src/models/backend/LSTM.py)
+
+loss:
+  type: "ANGULAR_MARGIN"
+
+training:
+  strategies: [OS]         # the bracket is measured on the OS-trained model
+  keep_checkpoints: true   # best weights stay on disk, so later test strategies can be scored without retraining
+  num_epochs: 128
+  batch_size: 100
+  # checkpoint_dir defaults to "checkpoints" (repo root, shared across compute
+  # nodes) -- /scratch is wiped at job termination, so it can't hold resume
+  # state across a requeue.
+  checkpoint_every_epochs: 1
+  # As in the paper: the full 128 epochs (no early stopping), best checkpoint
+  # among the 11 evaluated ones (np.linspace(0, 127, 11)).
+  paper_checkpoint_epochs: true
+  # Training segments are read from disk per draw -- match the SLURM jobs'
+  # --cpus-per-task.
+  num_workers: 16
+
+evaluation:
+  # 1 s = 94 frames: b = 8/16/32 give 12/6/3 blocks (134/214/374 ms). b = 64 is
+  # left out of GO/GS/GC: its 2 blocks make GS64 a plain swap.
+  test_strategies: [OS, SS, BS8, BS16, BS32, BS64, GO8, GS8, GC8, GO16, GS16, GC16, GO32, GS32, GC32]
+  sst_bootstrap_resamples: 200
+  sst_placebo: true
+
+wandb:
+  run_postfix: SST-1s-sanity
+  enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
+  project: "speaker-verification"
+  entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default
+  mode: "online"           # "offline" for SLURM compute nodes without internet (sync later with `wandb sync`)
+  tags: []
