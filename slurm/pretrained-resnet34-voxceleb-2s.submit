@@ -4,8 +4,8 @@
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=128G
 #SBATCH --array=0-4%1
 #SBATCH --account=cai_cv
 #SBATCH --partition=gpu_top

@@ -30,7 +30,7 @@ training:
   strategies: [OS]         # only names the sweep: nothing is trained
   # Test utterances are featurized in worker processes -- match the SLURM
   # jobs' --cpus-per-task.
-  num_workers: 32
+  num_workers: 24
 
 evaluation:
   # BS{b}: plain block shuffle, for U(b). GO{b}/GS{b}: blocks with gaps of
