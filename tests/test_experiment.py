@@ -1167,6 +1167,24 @@ def test_run_experiment_rescores_go_and_gs_of_runs_scored_without_fixed_gaps(mon
     assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_gap_ratio"] == 1.0
 
 
+def test_run_experiment_rescores_gapped_strategies_when_their_span_changes(monkeypatch):
+    corpus = _tiny_stub_corpus()
+    config = _continuation_config(2)
+    config.evaluation.test_strategies = ["OS", "GO16", "GS16", "GO16N3", "OC16N3"]
+    config.evaluation.sst_span_s = 1.8  # 180 frames: within the 2 s utterances
+    run_experiment(config, corpus=corpus)
+    manifest_path = experiment_module._manifest_path(config, "OS")
+    record = experiment_module._load_manifest(manifest_path)["completed"][0]
+    assert record["sst_span_frames"] == 180
+    assert {"GO16N3", "OC16N3"} <= set(record["sv"])
+
+    monkeypatch.setattr(experiment_module, "train", lambda *args, **kwargs: pytest.fail("retrained"))
+    config.evaluation.sst_span_s = 1.9
+    run_experiment(config, corpus=corpus)
+
+    assert experiment_module._load_manifest(manifest_path)["completed"][0]["sst_span_frames"] == 190
+
+
 def test_run_experiment_rescores_go_and_gs_of_runs_scored_in_other_windows(monkeypatch):
     corpus = _tiny_stub_corpus()
     config = _continuation_config(2)

@@ -1,4 +1,5 @@
 import functools
+import re
 
 import numpy as np
 
@@ -165,6 +166,14 @@ def draw_oc(data, segment_length, rng=None, *, block_size, gap):
     return centered_segment(data, segment_length, block_size, gap, rng.random())
 
 
+def draw_fixed_blocks(data, segment_length, rng=None, *, draw, block_size, num_blocks, gap):
+    """A gapped strategy's draw (draw_go, draw_gs, draw_gc or draw_oc) of
+    num_blocks blocks of block_size frames, whatever segment_length: the
+    GO{b}N{n}/GS{b}N{n}/GC{b}N{n}/OC{b}N{n} strategies, whose number of
+    joins doesn't depend on b."""
+    return draw(data, num_blocks * block_size, rng, block_size=block_size, gap=gap)
+
+
 def draw_mixture(data, segment_length, rng=None, choices=()):
     """A segment drawn by one of the `choices` strategies, picked uniformly
     at random per draw, so that one model is trained on (and in distribution
@@ -177,6 +186,22 @@ def draw_mixture(data, segment_length, rng=None, choices=()):
 # transformation.frame_step_s (10 ms) but each spans frame_length_s (64 ms
 # by default), so a block covers (b - 1) * 10 + 64 ms of signal.
 BLOCK_SIZES = (2, 4, 8, 16, 32, 64)
+
+# Numbers of blocks of the GO{b}N{n}/GS{b}N{n}/GC{b}N{n}/OC{b}N{n} strategies.
+NUM_BLOCKS = (3, 8)
+
+_GAPPED_NAME = re.compile(r"(GO|GS|GC|OC)(\d+)(?:N(\d+))?")
+
+
+def gapped_blocks(strategy):
+    """(b, n) of a gapped test strategy: GO{b}/GS{b}/GC{b}/OC{b} take as
+    many blocks of b frames as fill the segment (n None), their
+    GO{b}N{n}/... variants n blocks of b frames. None for other strategies."""
+    match = _GAPPED_NAME.fullmatch(strategy)
+    if match is None:
+        return None
+    return int(match[2]), int(match[3]) if match[3] else None
+
 
 # Feature frames per model frame of the RV{k} strategies (see reverse_frames).
 REVERSAL_STACKS = (1, 2)
@@ -201,5 +226,9 @@ DRAW_STRATEGIES = {
     **{f"GS{b}": functools.partial(draw_gs, block_size=b) for b in BLOCK_SIZES},
     **{f"GC{b}": functools.partial(draw_gc, block_size=b) for b in BLOCK_SIZES},
     **{f"OC{b}": functools.partial(draw_oc, block_size=b) for b in BLOCK_SIZES},
+    # Their variants with n blocks of b frames (n * b frames, n - 1 joins for every b).
+    **{f"{name}{b}N{n}": functools.partial(draw_fixed_blocks, draw=draw, block_size=b, num_blocks=n)
+       for name, draw in (("GO", draw_go), ("GS", draw_gs), ("GC", draw_gc), ("OC", draw_oc))
+       for b in BLOCK_SIZES for n in NUM_BLOCKS},
     **{name: functools.partial(draw_mixture, choices=choices) for name, choices in MIXTURES.items()},
 }

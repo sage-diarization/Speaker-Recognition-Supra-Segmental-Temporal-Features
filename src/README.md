@@ -282,6 +282,15 @@ span: one window of as many frames, at the same place, scored on the same
 trials (NaN where they are). OC{b}, GC{b}, GO{b} and GS{b} then differ only
 in how the segment's frames are taken from the span.
 
+**Comparing across b.** With a fixed gap, a smaller b spreads its blocks
+over a longer span and has more joins. `evaluation.sst_span_s` gives every
+b the same span instead: the gap becomes the largest that fits the blocks
+in it, with the configured gap as its minimum (`gapped_layout` in
+`src/training/trainer.py`). GO{b}N{n}/GS{b}N{n}/GC{b}N{n}/OC{b}N{n} take
+n blocks of b frames (n · b frames, n − 1 joins for every b), so the block
+width can be told apart from the number of joins. Runs scored with
+another span are rescored (the manifest's `sst_span_frames`).
+
 The price is that an utterance shorter than the span of the blocks and
 gaps, segment + (k − 1) · g ≈ segment · (1 + r) frames, can't be drawn. Its GO{b}/GS{b}
 embedding is NaN, and EER(GO_b) and EER(GS_b) come from only the trials

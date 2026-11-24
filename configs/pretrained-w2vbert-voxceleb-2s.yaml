@@ -42,23 +42,30 @@ evaluation:
   # in one cut / its contiguous middle, for comparing against OS at equal
   # input. One frame per 20 ms: blocks of
   # 2/4/8/16/32 frames span 55/95/175/335/655 ms of signal.
-  test_strategies: [OS, SS, BS2, BS4, BS8, BS16, BS32, GO2, GS2, GC2, OC2, GO4, GS4, GC4, OC4, GO8, GS8, GC8, OC8, GO16, GS16, GC16, OC16, GO32, GS32, GC32, OC32]
+  # GO{b}N8/GS{b}N8/OC{b}N8: 8 blocks of b frames (16 to 256 frames), so 7
+  # joins for every b: against GO{b}/GS{b}'s fixed 98-frame window (48 to 3
+  # joins), they tell the block width apart from the number of joins.
+  test_strategies: [OS, SS, BS2, BS4, BS8, BS16, BS32, GO2, GS2, GC2, OC2, GO4, GS4, GC4, OC4, GO8, GS8, GC8, OC8, GO16, GS16, GC16, OC16, GO32, GS32, GC32, OC32, GO2N8, GS2N8, OC2N8, GO4N8, GS4N8, OC4N8, GO8N8, GS8N8, OC8N8, GO16N8, GS16N8, OC16N8, GO32N8, GS32N8, OC32N8]
   # Quality checks of the bracket (see src/README.md's "SST bracket"): paired
   # trial-bootstrap intervals, and every GS{b} scored with a second seed.
   sst_bootstrap_resamples: 200
   sst_placebo: true
-  # Fixed gap of 440 ms (22 frames) for every b: the smallest swept gap at which GO{b}'s joins
+  # Gaps of at least 440 ms (22 frames) for every b: the smallest swept gap at which GO{b}'s joins
   # are as rough as GS{b}'s for every b (median, quartiles and share of rougher
   # joins), on the extended utterances (doc/join-roughness-gap-sweep.ipynb).
   sst_gap_s: 0.44
+  # Every b spreads its blocks over the same 23.08 s, the span GO2 needs with
+  # gaps of 440 ms (98 + 48 * 22 frames): larger b get larger gaps, so all
+  # draw their frames from the same stretch of the extended utterance.
+  sst_span_s: 23.08
   # GO/GS/GC/OC on the utterance followed by the rest of its video, as the
   # sweep validated (same-video trials left out), and all on the trials long
-  # enough for the smallest b's span (23.1 s), so they compare across b.
+  # enough for that span, so they compare across b.
   sst_extended_utterances: true
   sst_shared_trials: true
 
 wandb:
-  run_postfix: 2s
+  run_postfix: 2s-span     # a new sweep: the fixed-gap results of "2s" stay as they are
   enabled: true          # set true to track runs (needs `wandb login` or WANDB_API_KEY, unless mode is offline/disabled)
   project: "speaker-verification"
   entity: "marbetschar-zhaw"  # your wandb entity/team, "" = your default

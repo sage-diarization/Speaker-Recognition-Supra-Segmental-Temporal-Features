@@ -52,9 +52,22 @@ training:
 evaluation:
   # 1 s = 94 frames: b = 8/16/32 give 12/6/3 blocks (134/214/374 ms). b = 64 is
   # left out of GO/GS/GC: its 2 blocks make GS64 a plain swap.
-  test_strategies: [OS, SS, BS8, BS16, BS32, BS64, GO8, GS8, GC8, GO16, GS16, GC16, GO32, GS32, GC32]
+  # GO{b}N3/GS{b}N3/OC{b}N3: 3 blocks of b frames (24 to 96 frames; the CNN
+  # needs at least 22), so 2 joins for every b, telling the block width apart
+  # from the number of joins (11 to 2 for GO{b}/GS{b}).
+  test_strategies: [OS, SS, BS8, BS16, BS32, BS64, GO8, GS8, GC8, OC8, GO16, GS16, GC16, OC16, GO32, GS32, GC32, OC32, GO8N3, GS8N3, OC8N3, GO16N3, GS16N3, OC16N3, GO32N3, GS32N3, OC32N3]
   sst_bootstrap_resamples: 200
   sst_placebo: true
+  # As configs/pretrained-resnet34-voxceleb-2s.yaml (the same 10 ms frame
+  # grid): gaps of at least 590 ms, every b's blocks spread over the same
+  # 59.19 s of the utterance followed by the rest of its video, on the trials
+  # long enough for it (same-video trials left out) -- the same trials as
+  # that model's. The runs' kept best checkpoints are scored again: nothing
+  # is retrained.
+  sst_gap_s: 0.59
+  sst_span_s: 59.19
+  sst_extended_utterances: true
+  sst_shared_trials: true
 
 wandb:
   run_postfix: SST-1s-sanity

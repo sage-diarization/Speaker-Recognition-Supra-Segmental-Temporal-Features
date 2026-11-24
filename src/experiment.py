@@ -44,7 +44,7 @@ from .evaluation.verification import (
 )
 from .models.losses import build_loss
 from .models.registry import build_model
-from .training.trainer import GAPPED_WINDOWS, best_checkpoint_path, block_gap, extract_embeddings_by_strategy, train
+from .training.trainer import GAPPED_WINDOWS, best_checkpoint_path, extract_embeddings_by_strategy, gapped_layout, train
 
 STRATEGIES = ("OS", "SS", "SU")
 
@@ -621,9 +621,13 @@ def run_experiment(config, corpus=None, strategies=None):
     gap_frames = None
     if config.evaluation.sst_gap_s is not None:
         gap_frames = round(config.evaluation.sst_gap_s / transformation.frame_period_s)
+    span_frames = None
+    if config.evaluation.sst_span_s is not None:
+        span_frames = round(config.evaluation.sst_span_s / transformation.frame_period_s)
+    gap_kwargs = {"gap_ratio": gap_ratio, "gap_frames": gap_frames, "span_frames": span_frames}
     # The largest span of GO{b}/GS{b}/GC{b}/OC{b} windows (the smallest b's).
     gapped_max_span = max(
-        (gapped_span(segment_length, int(s[2:]), block_gap(int(s[2:]), gap_ratio, gap_frames)) for s in gapped_strategies),
+        (gapped_span(*gapped_layout(s, segment_length, **gap_kwargs)) for s in gapped_strategies),
         default=0,
     )
     # The GO{b}/GS{b}/GC{b}/OC{b} windows' utterances, and per trial whether
@@ -816,7 +820,7 @@ def run_experiment(config, corpus=None, strategies=None):
         # How GO{b}/GS{b}/GC{b}/OC{b} were scored: rescored when any differs.
         gapped_settings = {
             "sst_gap_ratio": gap_ratio, "sst_gap_frames": gap_frames, "sst_gapped_windows": GAPPED_WINDOWS,
-            "sst_extended_utterances": extended, "sst_shared_trials": shared_trials,
+            "sst_extended_utterances": extended, "sst_shared_trials": shared_trials, "sst_span_frames": span_frames,
         }
 
         def embedding_resume_dir(run_idx, name, strategies_to_test):
@@ -830,6 +834,8 @@ def run_experiment(config, corpus=None, strategies=None):
             if gap_frames is not None or extended:
                 # Only the settings that change embeddings; older keys stay valid.
                 key += f";gap_frames={gap_frames};extended={extended}"
+            if span_frames is not None:
+                key += f";span_frames={span_frames}"
             key = hashlib.sha1(key.encode()).hexdigest()[:10]
             return _embedding_cache_dir(config, train_strategy, run_idx) / f"{name}-{key}"
 
@@ -873,14 +879,14 @@ def run_experiment(config, corpus=None, strategies=None):
                     model, utterances, segment_length,
                     {test_strategy: np.random.default_rng(run_idx) for test_strategy in group},
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                    resume_dir=embedding_resume_dir(run_idx, "test", group), gap_ratio=gap_ratio, gap_frames=gap_frames,
+                    resume_dir=embedding_resume_dir(run_idx, "test", group), **gap_kwargs,
                 ))
             print(f"==> Final evaluation: embedded in {time.perf_counter() - started:.0f}s", flush=True)
             if sc_utterances is not None:
                 sc_by_strategy = extract_embeddings_by_strategy(
                     model, sc_utterances, segment_length,
                     {test_strategy: np.random.default_rng(run_idx) for test_strategy in strategies_to_test},
-                    device=config.device, num_workers=config.training.num_workers, gap_ratio=gap_ratio, gap_frames=gap_frames,
+                    device=config.device, num_workers=config.training.num_workers, **gap_kwargs,
                 )
             if any(_gapped(test_strategy) for test_strategy in strategies_to_test):
                 record.update(gapped_settings)
@@ -932,8 +938,7 @@ def run_experiment(config, corpus=None, strategies=None):
                     model, gapped_utterances, segment_length,
                     {test_strategy: np.random.default_rng((run_idx, 1)) for test_strategy in gs_strategies},
                     device=config.device, num_workers=config.training.num_workers, log_every=10_000,
-                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), gap_ratio=gap_ratio,
-                    gap_frames=gap_frames,
+                    resume_dir=embedding_resume_dir(run_idx, "placebo", gs_strategies), **gap_kwargs,
                 ) if gs_strategies else {}
                 for test_strategy in gs_strategies:
                     _, trial_scores[f"{test_strategy}-placebo"] = sv_scores_fn(*placebo_by_strategy[test_strategy])
@@ -970,7 +975,7 @@ def run_experiment(config, corpus=None, strategies=None):
             # Records predating a setting were scored with its default.
             recorded = {
                 key: completed_record.get(key, {"sst_gap_frames": None, "sst_extended_utterances": False,
-                                                "sst_shared_trials": False}.get(key))
+                                                "sst_shared_trials": False, "sst_span_frames": None}.get(key))
                 for key in gapped_settings
             }
             if gapped_strategies and recorded != gapped_settings:

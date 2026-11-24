@@ -393,6 +393,14 @@ class EvaluationConfig:
     # for every b instead, when set (overrides sst_gap_ratio): e.g. the gap at
     # which GO's joins are as rough as GS's (doc/join-roughness-gap-sweep.ipynb).
     sst_gap_s: float | None = None
+    # When set, every GO{b}/GS{b}/GC{b}/OC{b} (and GO{b}N{n}/...) spreads its
+    # blocks over the same span of round(sst_span_s /
+    # transformation.frame_period_s) frames: the gap is the largest that fits
+    # them in it (see src/training/trainer.py's gapped_layout), and the gap
+    # above (sst_gap_s or sst_gap_ratio) only its minimum. So every b draws
+    # its frames from the same stretch of the utterance. A span too short for
+    # some strategy's minimum gaps raises.
+    sst_span_s: float | None = None
     # VoxCeleb only: GO{b}/GS{b}/GC{b}/OC{b} windows come from the trial
     # utterance followed by the other utterances of its video in file order,
     # each featurized on its own (see src/experiment.py's

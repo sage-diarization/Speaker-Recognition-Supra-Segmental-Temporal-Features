@@ -347,6 +347,36 @@ def test_eval_windows_fixed_gap_frames_override_the_ratio():
     assert _eval_windows(features[:162], 48, 24, 1, "GO2", np.random.default_rng(0), gap_frames=5) == []
 
 
+def test_eval_windows_span_frames_spread_every_block_size_over_the_same_span():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(400, dtype=np.float32)[:, None]
+    for block_size, gap in ((2, 6), (4, 13), (16, 76)):  # (200 - 48) // (48 / b - 1)
+        window = _eval_windows(features, 48, 24, 1, f"GO{block_size}", np.random.default_rng(0), gap_frames=5,
+                               span_frames=200)[0]
+        assert window.shape == (48, 1)
+        assert set(np.diff(window[:, 0])) == {1, gap + 1}
+        assert window[-1, 0] - window[0, 0] + 1 <= 200
+    # GO2 with 23 gaps of at least 5 frames needs 163 frames.
+    with pytest.raises(ValueError):
+        _eval_windows(features, 48, 24, 1, "GO2", np.random.default_rng(0), gap_frames=5, span_frames=162)
+
+
+def test_eval_windows_fixed_number_of_blocks_whatever_the_segment_length():
+    from src.training.trainer import _eval_windows
+
+    features = np.arange(400, dtype=np.float32)[:, None]
+    for block_size in (2, 8, 32):
+        go = _eval_windows(features, 48, 24, 1, f"GO{block_size}N3", np.random.default_rng(0), gap_frames=5)[0]
+        assert go.shape == (3 * block_size, 1)
+        assert list(np.diff(go[:, 0])).count(6) == 2  # 2 joins, gaps of 5
+        oc = _eval_windows(features, 48, 24, 1, f"OC{block_size}N3", np.random.default_rng(0), gap_frames=5)[0]
+        assert oc.shape == go.shape and np.all(np.diff(oc[:, 0]) == 1)
+    # With a span, its 2 gaps fill it: (100 - 24) // 2 = 38.
+    go = _eval_windows(features, 48, 24, 1, "GO8N3", np.random.default_rng(0), gap_frames=5, span_frames=100)[0]
+    assert sorted(set(np.diff(go[:, 0]))) == [1, 39]
+
+
 def test_eval_windows_gc_cuts_the_gos_gap_frames_in_one_piece():
     from src.training.trainer import _eval_windows
 

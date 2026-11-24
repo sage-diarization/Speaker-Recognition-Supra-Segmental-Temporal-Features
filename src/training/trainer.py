@@ -14,7 +14,8 @@ from torch.utils.data import DataLoader
 from .. import tracking
 from ..data.lazy_features import resolve_features
 from ..data.segments import (
-    MIXTURES, centered_segment, consecutive_gap_segment, gapped_segment, gapped_span, reverse_frames, shuffle_blocks,
+    MIXTURES, centered_segment, consecutive_gap_segment, gapped_blocks, gapped_segment, gapped_span, reverse_frames,
+    shuffle_blocks,
 )
 from ..evaluation.verification import equal_error_rate
 
@@ -470,7 +471,32 @@ def block_gap(block_size, gap_ratio, gap_frames):
     return round(gap_ratio * block_size)
 
 
-def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap_ratio=None, gap_frames=None):
+def gapped_layout(strategy, segment_length, gap_ratio=None, gap_frames=None, span_frames=None):
+    """(window, b, gap) of a gapped test strategy (see
+    src/data/segments.py's gapped_blocks): its window of segment_length
+    frames (GO{b}N{n}/...: n * b frames), in blocks of b frames with `gap`
+    frames between them. The gap is block_gap(...), or, with span_frames,
+    the largest one that keeps the blocks within span_frames frames, so
+    every b's blocks spread over (about) the same span of the utterance;
+    block_gap(...) is then its minimum, and a span too short for it raises."""
+    block_size, num_blocks = gapped_blocks(strategy)
+    window = segment_length if num_blocks is None else num_blocks * block_size
+    if gap_ratio is None and gap_frames is None:
+        raise ValueError(f"{strategy} needs the gap between its blocks")
+    gap = block_gap(block_size, gap_ratio, gap_frames)
+    joins = -(-window // block_size) - 1
+    if span_frames is not None and joins > 0:
+        if span_frames < gapped_span(window, block_size, gap):
+            raise ValueError(
+                f"{strategy}'s blocks need {gapped_span(window, block_size, gap)} frames with gaps of at least "
+                f"{gap} frames, more than the span of {span_frames} frames"
+            )
+        gap = (span_frames - window) // joins
+    return window, block_size, gap
+
+
+def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rng, gap_ratio=None, gap_frames=None,
+                  span_frames=None):
     """Builds the num_windows hop-window segments for one utterance, matching
     context/src/setup/setup.py's precomputed EVAL distributions -- the ones
     context/src/generator/sampler.py::load_test actually reads at test time
@@ -499,7 +525,8 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
 
     GO{b}/GS{b} windows instead take b-frame blocks with fixed gaps of
     round(gap_ratio * b) frames between them (gap_frames for every b, when
-    given)
+    given; with span_frames, the gap that spreads them over that span, see
+    gapped_layout)
     (src/data/segments.py::gapped_segment), in one window in the middle of
     the utterance (GAPPED_WINDOWS), whatever num_windows: several windows at
     shifted positions would see each other's gap frames, so the utterance's
@@ -513,13 +540,12 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
     consecutive_gap_segment). OC{b}'s window is the contiguous
     segment_length frames in the middle of that span
     (src/data/segments.py::centered_segment): an OS window of the same size,
-    place and utterances. An utterance too short for the gaps gets no
-    windows (an empty list)."""
-    if draw_strategy.startswith(("GO", "GS", "GC", "OC")):
-        if gap_ratio is None and gap_frames is None:
-            raise ValueError(f"{draw_strategy} needs the gap between its blocks")
-        block_size = int(draw_strategy[2:])
-        if features.shape[0] < gapped_span(segment_length, block_size, block_gap(block_size, gap_ratio, gap_frames)):
+    place and utterances. GO{b}N{n}/GS{b}N{n}/GC{b}N{n}/OC{b}N{n} do the
+    same with a window of n blocks of b frames. An utterance too short for
+    the gaps gets no windows (an empty list)."""
+    if gapped_blocks(draw_strategy) is not None:
+        window, block_size, gap = gapped_layout(draw_strategy, segment_length, gap_ratio, gap_frames, span_frames)
+        if features.shape[0] < gapped_span(window, block_size, gap):
             return []
         num_windows = 1
     if draw_strategy == "SU":
@@ -530,10 +556,10 @@ def _eval_windows(features, segment_length, step, num_windows, draw_strategy, rn
         strategy = draw_strategy
         if strategy in MIXTURES:
             strategy = MIXTURES[strategy][rng.integers(len(MIXTURES[strategy]))]
-        if strategy.startswith(("GO", "GS", "GC", "OC")):
-            block_size = int(strategy[2:])
+        if gapped_blocks(strategy) is not None:
+            window, block_size, gap = gapped_layout(strategy, segment_length, gap_ratio, gap_frames, span_frames)
             cut = {"GC": consecutive_gap_segment, "OC": centered_segment}.get(strategy[:2], gapped_segment)
-            segment = cut(features, segment_length, block_size, block_gap(block_size, gap_ratio, gap_frames), 0.5)
+            segment = cut(features, window, block_size, gap, 0.5)
             if strategy.startswith("GS"):
                 segment = shuffle_blocks(segment, block_size, rng)
             segments.append(segment)
@@ -588,14 +614,15 @@ EMBEDDING_BATCH_FRAMES = 2048 * 94
 
 
 def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, device="cpu", hop_fraction=0.5, num_workers=0,
-                                   log_every=None, resume_dir=None, gap_ratio=None, gap_frames=None):
+                                   log_every=None, resume_dir=None, gap_ratio=None, gap_frames=None, span_frames=None):
     """extract_embeddings for several draw strategies at once -- rngs maps
     each strategy to the Generator its windows are drawn with -- featurizing
     every utterance only once instead of once per strategy. Returns
     {strategy: (embeddings, labels)}, each equal to a separate
     extract_embeddings call with that strategy and Generator. log_every
     prints progress every that many utterances. gap_ratio or gap_frames sets
-    the GO{b}/GS{b} strategies' gap between blocks (see _eval_windows); an utterance too
+    the GO{b}/GS{b} strategies' gap between blocks, span_frames the span they
+    spread over (see _eval_windows, gapped_layout); an utterance too
     short for it gets a NaN embedding under them.
 
     Utterances are featurized EMBEDDING_CHUNK_UTTERANCES at a time, and the
@@ -655,7 +682,8 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                     if counts and sum(counts) + num_windows > batch_windows:
                         embeddings[strategy].extend(embed(windows, counts))
                         windows, counts = pending[strategy] = ([], [])
-                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap_ratio, gap_frames)
+                    segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap_ratio, gap_frames,
+                                             span_frames)
                     if segments:
                         windows.append(np.stack(segments))
                     counts.append(len(segments))

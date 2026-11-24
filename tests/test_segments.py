@@ -153,6 +153,23 @@ def test_draw_strategies_register_gapped_block_pairs():
     assert {"GO8", "GS8", "GO64", "GS64"} <= set(DRAW_STRATEGIES)
 
 
+def test_gapped_blocks_parses_block_size_and_number_of_blocks():
+    from src.data.segments import gapped_blocks
+
+    assert gapped_blocks("GO8") == (8, None)
+    assert gapped_blocks("OC16N3") == (16, 3)
+    assert gapped_blocks("BS8") is None
+    assert gapped_blocks("GS8N") is None
+    assert {"GO2N8", "GS2N8", "GC32N3", "OC64N8"} <= set(DRAW_STRATEGIES)
+
+
+def test_draw_fixed_blocks_takes_n_blocks_whatever_the_segment_length(utterance):
+    go = DRAW_STRATEGIES["GO4N3"](utterance, 96, np.random.default_rng(0), gap=5)
+    rows = go[:, 0] / 8
+    assert len(rows) == 12
+    assert sorted(set(np.diff(rows))) == [1, 6]  # 3 blocks of 4, 2 gaps of 5
+
+
 def test_consecutive_gap_segment_removes_the_gaps_frames_in_one_cut(utterance):
     from src.data.segments import consecutive_gap_segment, gapped_segment
 
