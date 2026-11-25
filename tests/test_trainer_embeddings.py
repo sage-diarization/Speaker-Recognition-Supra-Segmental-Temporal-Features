@@ -273,6 +273,29 @@ def test_chunked_cross_utterance_batches_match_per_utterance_forward_passes(monk
     assert all(size <= 7 for size in batch_sizes if size != 8)
 
 
+def test_batches_of_windows_longer_than_segment_length_stay_within_the_frame_budget(monkeypatch):
+    """GO{b}N{n} windows are n * b frames, not segment_length: a batch of
+    them must still hold at most EMBEDDING_BATCH_FRAMES frames (the
+    w2v-BERT VoxCeleb1-H evaluation ran out of GPU memory on 2.6 times as
+    many with GO32N8's 256-frame windows against 98-frame segments)."""
+    from src.training import trainer
+
+    segment_length = 8
+    utterances = [(np.ones((22, 3), dtype=np.float32), f"utt{i}") for i in range(20)]
+    monkeypatch.setattr(trainer, "EMBEDDING_BATCH_FRAMES", 16 * segment_length)
+    frames = []
+
+    class Recording(_MeanModel):
+        def __call__(self, x):
+            frames.append(x.shape[0] * x.shape[2])
+            return super().__call__(x)
+
+    # GO4N4: one 16-frame window per utterance, twice segment_length.
+    trainer.extract_embeddings_by_strategy(Recording(), utterances, segment_length, {"GO4N4": np.random.default_rng(0)},
+                                           gap_frames=2)
+    assert max(frames) <= 16 * segment_length and len(frames) < len(utterances)
+
+
 def test_eval_windows_block_shuffle_keeps_window_frames_and_block_order():
     from src.training.trainer import _eval_windows
 

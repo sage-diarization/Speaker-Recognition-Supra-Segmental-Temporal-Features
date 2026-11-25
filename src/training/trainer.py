@@ -640,7 +640,6 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
     the last finished chunk, with the same result. The caller deletes the
     directory once it no longer needs it."""
     step = max(int(hop_fraction * segment_length), 1)
-    batch_windows = max(EMBEDDING_BATCH_FRAMES // segment_length, 1)
     started = time.perf_counter()
 
     def embed(windows, counts):
@@ -657,6 +656,7 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
     model.eval()
     embeddings, labels = {strategy: [] for strategy in rngs}, []
     pending = {strategy: ([], []) for strategy in rngs}  # windows, window count per utterance
+    pending_frames = dict.fromkeys(rngs, 0)
     if resume_dir is not None:
         resume_dir = Path(resume_dir)
         resume_dir.mkdir(parents=True, exist_ok=True)
@@ -679,11 +679,16 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                 num_windows = (length - segment_length) // step + 1
                 for strategy, rng in rngs.items():
                     windows, counts = pending[strategy]
-                    if counts and sum(counts) + num_windows > batch_windows:
-                        embeddings[strategy].extend(embed(windows, counts))
-                        windows, counts = pending[strategy] = ([], [])
                     segments = _eval_windows(features, segment_length, step, num_windows, strategy, rng, gap_ratio, gap_frames,
                                              span_frames)
+                    # Frames, not windows: a gapped strategy's one window per
+                    # utterance can be longer than segment_length.
+                    frames = sum(len(segment) for segment in segments)
+                    if counts and pending_frames[strategy] + frames > EMBEDDING_BATCH_FRAMES:
+                        embeddings[strategy].extend(embed(windows, counts))
+                        windows, counts = pending[strategy] = ([], [])
+                        pending_frames[strategy] = 0
+                    pending_frames[strategy] += frames
                     if segments:
                         windows.append(np.stack(segments))
                     counts.append(len(segments))
@@ -694,6 +699,7 @@ def extract_embeddings_by_strategy(model, utterances, segment_length, rngs, devi
                     if counts:
                         embeddings[strategy].extend(embed(windows, counts))
                         pending[strategy] = ([], [])
+                        pending_frames[strategy] = 0
                 first_embedding, first_label = chunk_first
                 saved = {"labels": np.array(labels[first_label:])}
                 for strategy, rng in rngs.items():
